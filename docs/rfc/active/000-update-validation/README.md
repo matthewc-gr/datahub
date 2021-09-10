@@ -65,20 +65,60 @@ steps indicates the development lifecycle:
 ### Contract Example
 
 ```java
-public class ValidationResult {
-    Optional<RecordTemplate> modifiedValue; // Empty if validation fails
-    List<Issue> issues; // A list of why the validation failed, empty if success
+interface ChangeProcessor {
+  BeforeChangeProposal beforeChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType);
+  AfterChangeProposal afterChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType);
+  Integer priority = 0;
+}
+
+class BaseChangeProcessor implements ChangeProcessor {
+  @Override
+  public BeforeChangeProposal beforeChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType) {
+    return null;
+  }
+
+  @Override
+  public AfterChangeProposal afterChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType) {
+    return null;
+  }
+}
+
+class BeforeChangeProposal {
+  List<Aspect> aspects;
+  String message;
+}
+
+class AfterChangeProposal {
+  List<Aspect> aspects;
+  String message;
+}
+
+@interface EntityScope {
+  String entityName();
+}
+
+@interface AspectScope {
+  String[] aspectNames();
+}
+
+// Usage examples
+
+@EntityScope(entityName = "dataset")
+@AspectScope(aspectNames = {"resource"})
+class StateMachineChangeProcessor extends BaseChangeProcessor {
+
+  @Override
+  public BeforeChangeProposal beforeChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType) {
+    return null;
+  }
+}
+
+class Demo {
+  public void run(ChangeProcessor[] processors){
+    Arrays.asList(processors).sort(Comparator.comparing(o -> o.priority));
+  }
 }
 ```
-
-```java
-public interface UpdateValidation {
-    ValidationResult validate(Optional<RecordTemplate> previousRecord, RecordTemplate newRecord);
-}
-```
-
-The previous class/interface would be defined in a package that is published to an artefact repository that both the
-metadata-io module and the custom validation logic references.
 
 ## Drawbacks
 

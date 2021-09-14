@@ -66,19 +66,41 @@ steps indicates the development lifecycle:
 
 ```java
 interface ChangeProcessor {
-  BeforeChangeProposal beforeChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType);
-  AfterChangeProposal afterChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType);
+  BeforeChangeProposal beforeChange(String entityType,
+                                    Aspect key,
+                                    String aspectName,
+                                    Aspect previousAspect,
+                                    Aspect newAspect,
+                                    ChangeType changeType);
+
+  AfterChangeProposal afterChange(String entityType,
+                                  Aspect key,
+                                  String aspectName,
+                                  Aspect previousAspect,
+                                  Aspect newAspect,
+                                  ChangeType changeType);
+
   Integer priority = 0;
 }
 
 class BaseChangeProcessor implements ChangeProcessor {
   @Override
-  public BeforeChangeProposal beforeChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType) {
+  public BeforeChangeProposal beforeChange(String entityType,
+                                           Aspect key,
+                                           String aspectName,
+                                           Aspect previousAspect,
+                                           Aspect newAspect,
+                                           ChangeType changeType) {
     return null;
   }
 
   @Override
-  public AfterChangeProposal afterChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType) {
+  public AfterChangeProposal afterChange(String entityType,
+                                         Aspect key,
+                                         String aspectName,
+                                         Aspect previousAspect,
+                                         Aspect newAspect,
+                                         ChangeType changeType) {
     return null;
   }
 }
@@ -93,30 +115,20 @@ class AfterChangeProposal {
   String message;
 }
 
+@Retention(RetentionPolicy.RUNTIME)
 @interface EntityScope {
-  String entityName();
+  String[] entityNames();
 }
 
+@Retention(RetentionPolicy.RUNTIME)
 @interface AspectScope {
   String[] aspectNames();
 }
 
-// Usage examples
-
-@EntityScope(entityName = "dataset")
+// Usage example
+@EntityScope(entityNames = {"dataset"})
 @AspectScope(aspectNames = {"resource"})
 class StateMachineChangeProcessor extends BaseChangeProcessor {
-
-  @Override
-  public BeforeChangeProposal beforeChange(Aspect[] previousAspects, Aspect[] newAspects, ChangeType changeType) {
-    return null;
-  }
-}
-
-class Demo {
-  public void run(ChangeProcessor[] processors){
-    Arrays.asList(processors).sort(Comparator.comparing(o -> o.priority));
-  }
 }
 ```
 

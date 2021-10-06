@@ -4,11 +4,11 @@ import GroupHeader from './GroupHeader';
 import { useGetGroupQuery } from '../../../graphql/group.generated';
 import { useGetAllEntitySearchResults } from '../../../utils/customGraphQL/useGetAllEntitySearchResults';
 import useUserParams from '../../shared/entitySearch/routingUtils/useUserParams';
-import { EntityProfile } from '../../shared/EntityProfile';
 import { EntityRelationshipsResult, EntityType, SearchResult } from '../../../types.generated';
 import RelatedEntityResults from '../../shared/entitySearch/RelatedEntityResults';
 import { Message } from '../../shared/Message';
 import GroupMembers from './GroupMembers';
+import { LegacyEntityProfile } from '../../shared/LegacyEntityProfile';
 
 const messageStyle = { marginTop: '10%' };
 
@@ -22,7 +22,7 @@ const ENABLED_TAB_TYPES = [TabType.Members, TabType.Ownership];
 const MEMBER_PAGE_SIZE = 20;
 
 /**
- * Responsible for reading & writing users.
+ * Responsible for reading & writing groups.
  */
 export default function GroupProfile() {
     const { urn } = useUserParams();
@@ -87,7 +87,7 @@ export default function GroupProfile() {
         <>
             {contentLoading && <Message type="loading" content="Loading..." style={messageStyle} />}
             {data && data?.corpGroup && (
-                <EntityProfile
+                <LegacyEntityProfile
                     title=""
                     tags={null}
                     header={

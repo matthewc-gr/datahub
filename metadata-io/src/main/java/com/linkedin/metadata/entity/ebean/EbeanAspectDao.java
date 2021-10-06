@@ -24,6 +24,7 @@ import io.ebean.Query;
 import io.ebean.RawSql;
 import io.ebean.RawSqlBuilder;
 import io.ebean.Transaction;
+import io.ebean.annotation.TxIsolation;
 import io.ebean.config.ServerConfig;
 import java.net.URISyntaxException;
 import java.sql.Timestamp;
@@ -43,7 +44,7 @@ import javax.persistence.RollbackException;
 import javax.persistence.Table;
 import lombok.extern.slf4j.Slf4j;
 
-import static com.linkedin.metadata.entity.EntityService.*;
+import static com.linkedin.metadata.Constants.*;
 
 @Slf4j
 public class EbeanAspectDao {
@@ -133,7 +134,7 @@ public class EbeanAspectDao {
     }
 
     // Save newValue as the latest version (v0)
-    saveAspect(urn, aspectName, newAspectMetadata, newActor, newImpersonator, newTime, newSystemMetadata, LATEST_ASPECT_VERSION, oldAspectMetadata == null);
+    saveAspect(urn, aspectName, newAspectMetadata, newActor, newImpersonator, newTime, newSystemMetadata, ASPECT_LATEST_VERSION, oldAspectMetadata == null);
 
     // Apply retention policy
     applyRetention(urn, aspectName, getRetention(aspectName), largestVersion);
@@ -376,7 +377,7 @@ public class EbeanAspectDao {
         .select(EbeanAspectV2.KEY_ID)
         .where()
         .eq(EbeanAspectV2.ASPECT_COLUMN, aspectName)
-        .eq(EbeanAspectV2.VERSION_COLUMN, LATEST_ASPECT_VERSION)
+        .eq(EbeanAspectV2.VERSION_COLUMN, ASPECT_LATEST_VERSION)
         .setFirstRow(start)
         .setMaxRows(pageSize)
         .orderBy()
@@ -423,7 +424,7 @@ public class EbeanAspectDao {
       @Nonnull final String aspectName,
       final int start,
       final int pageSize) {
-    return listAspectMetadata(entityName, aspectName, LATEST_ASPECT_VERSION, start, pageSize);
+    return listAspectMetadata(entityName, aspectName, ASPECT_LATEST_VERSION, start, pageSize);
   }
 
   @Nonnull
@@ -471,7 +472,7 @@ public class EbeanAspectDao {
 
     T result = null;
     do {
-      try (Transaction transaction = _server.beginTransaction()) {
+      try (Transaction transaction = _server.beginTransaction(TxIsolation.REPEATABLE_READ)) {
         result = block.get();
         transaction.commit();
         lastException = null;
@@ -520,7 +521,7 @@ public class EbeanAspectDao {
         .where()
         .eq(EbeanAspectV2.URN_COLUMN, urn)
         .eq(EbeanAspectV2.ASPECT_COLUMN, aspectName)
-        .ne(EbeanAspectV2.VERSION_COLUMN, LATEST_ASPECT_VERSION)
+        .ne(EbeanAspectV2.VERSION_COLUMN, ASPECT_LATEST_VERSION)
         .le(EbeanAspectV2.VERSION_COLUMN, largestVersion - retention.getMaxVersionsToRetain() + 1)
         .delete();
   }

@@ -41,6 +41,8 @@ export class GroupEntity implements Entity<CorpGroup> {
 
     getPathName: () => string = () => 'group';
 
+    getEntityName = () => 'Group';
+
     getCollectionName: () => string = () => 'Groups';
 
     renderProfile: (urn: string) => JSX.Element = (_) => <GroupProfile />;
@@ -56,5 +58,9 @@ export class GroupEntity implements Entity<CorpGroup> {
 
     renderSearch = (result: SearchResult) => {
         return this.renderPreview(PreviewType.SEARCH, result.entity as CorpGroup);
+    };
+
+    displayName = (data: CorpGroup) => {
+        return data.info?.displayName || data.name;
     };
 }

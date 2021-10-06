@@ -1,7 +1,6 @@
 package com.linkedin.gms.factory.entity;
 
-import com.linkedin.metadata.entity.ebean.EbeanAspectDao;
-import io.ebean.config.ServerConfig;
+import com.linkedin.metadata.entity.datastax.DatastaxAspectDao;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -9,20 +8,21 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
+import java.util.Map;
 
 import javax.annotation.Nonnull;
 
 
 @Configuration
-public class EbeanAspectDaoFactory {
+public class DatastaxAspectDaoFactory {
   @Autowired
   ApplicationContext applicationContext;
 
-  @Bean(name = "ebeanAspectDao")
-  @DependsOn({"gmsEbeanServiceConfig"})
-  @ConditionalOnProperty(name = "DAO_SERVICE_LAYER", havingValue = "ebean", matchIfMissing = true)
+  @Bean(name = "datastaxAspectDao")
+  @ConditionalOnProperty(name = "DAO_SERVICE_LAYER", havingValue = "datastax")
+  @DependsOn({"gmsDatastaxServiceConfig"})
   @Nonnull
-  protected EbeanAspectDao createInstance() {
-    return new EbeanAspectDao(applicationContext.getBean(ServerConfig.class));
+  protected DatastaxAspectDao createInstance() {
+    return new DatastaxAspectDao((Map<String, String>) applicationContext.getBean("gmsDatastaxServiceConfig"));
   }
 }

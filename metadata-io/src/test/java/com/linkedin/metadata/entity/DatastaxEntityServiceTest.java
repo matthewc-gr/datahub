@@ -1,5 +1,9 @@
 package com.linkedin.metadata.entity;
 
+import com.datastax.driver.core.Cluster;
+import com.datastax.driver.core.KeyspaceMetadata;
+import com.datastax.driver.core.Session;
+import com.google.common.base.Equivalence;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.linkedin.common.AuditStamp;
@@ -12,51 +16,50 @@ import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.dataset.DatasetProfile;
 import com.linkedin.events.metadata.ChangeType;
 import com.linkedin.identity.CorpUserInfo;
+import com.linkedin.metadata.query.ListUrnsResult;
+import com.linkedin.metadata.utils.EntityKeyUtils;
+import com.linkedin.metadata.utils.PegasusUtils;
 import com.linkedin.metadata.aspect.Aspect;
 import com.linkedin.metadata.aspect.CorpUserAspect;
 import com.linkedin.metadata.aspect.CorpUserAspectArray;
 import com.linkedin.metadata.aspect.VersionedAspect;
-import com.linkedin.metadata.changeprocessor.ChangeProcessor;
-import com.linkedin.metadata.changeprocessor.ChangeStreamProcessor;
-import com.linkedin.metadata.changeprocessor.ChangeResult;
-import com.linkedin.metadata.entity.ebean.EbeanAspectDao;
-import com.linkedin.metadata.entity.ebean.EbeanAspectV2;
-import com.linkedin.metadata.entity.ebean.EbeanEntityService;
+import com.linkedin.metadata.entity.datastax.DatastaxAspect;
+import com.linkedin.metadata.entity.datastax.DatastaxAspectDao;
+import com.linkedin.metadata.entity.datastax.DatastaxEntityService;
 import com.linkedin.metadata.event.EntityEventProducer;
 import com.linkedin.metadata.key.CorpUserKey;
 import com.linkedin.metadata.models.registry.ConfigEntityRegistry;
 import com.linkedin.metadata.models.registry.EntityRegistry;
 import com.linkedin.metadata.models.registry.MergedEntityRegistry;
-import com.linkedin.metadata.query.ListUrnsResult;
 import com.linkedin.metadata.run.AspectRowSummary;
 import com.linkedin.metadata.snapshot.CorpUserSnapshot;
 import com.linkedin.metadata.snapshot.Snapshot;
-import com.linkedin.metadata.utils.EntityKeyUtils;
-import com.linkedin.metadata.utils.PegasusUtils;
 import com.linkedin.mxe.GenericAspect;
 import com.linkedin.mxe.MetadataAuditOperation;
 import com.linkedin.mxe.MetadataChangeProposal;
 import com.linkedin.mxe.SystemMetadata;
-import io.ebean.EbeanServer;
-import io.ebean.EbeanServerFactory;
-import io.ebean.config.ServerConfig;
-import io.ebean.datasource.DataSourceConfig;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+import javax.annotation.Nonnull;
 import org.mockito.Mockito;
+import org.testcontainers.containers.CassandraContainer;
+import org.testcontainers.utility.DockerImageName;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import javax.annotation.Nonnull;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
-import static org.testng.Assert.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertTrue;
 
 
-public class EbeanEntityServiceTest {
+public class DatastaxEntityServiceTest {
 
   private static final AuditStamp TEST_AUDIT_STAMP = createTestAuditStamp();
   private final EntityRegistry _snapshotEntityRegistry = new TestEntityRegistry();
@@ -64,28 +67,14 @@ public class EbeanEntityServiceTest {
       new ConfigEntityRegistry(Snapshot.class.getClassLoader().getResourceAsStream("entity-registry.yml"));
   private final EntityRegistry _testEntityRegistry =
       new MergedEntityRegistry(_snapshotEntityRegistry, _configEntityRegistry);
-  private EbeanEntityService _entityService;
-  private EbeanAspectDao _aspectDao;
-  private EbeanServer _server;
+  private DatastaxEntityService _entityService;
   private EntityEventProducer _mockProducer;
-  private ChangeStreamProcessor _changeStreamProcessor;
+  private DatastaxAspectDao _aspectDao;
+  private CassandraContainer _cassandraContainer;
 
-  @Nonnull
-  private static ServerConfig createTestingH2ServerConfig() {
-    DataSourceConfig dataSourceConfig = new DataSourceConfig();
-    dataSourceConfig.setUsername("tester");
-    dataSourceConfig.setPassword("");
-    dataSourceConfig.setUrl("jdbc:h2:mem:;IGNORECASE=TRUE;");
-    dataSourceConfig.setDriver("org.h2.Driver");
-
-    ServerConfig serverConfig = new ServerConfig();
-    serverConfig.setName("gma");
-    serverConfig.setDataSourceConfig(dataSourceConfig);
-    serverConfig.setDdlGenerate(true);
-    serverConfig.setDdlRun(true);
-
-    return serverConfig;
-  }
+  private static final DockerImageName IMAGE_NAME = DockerImageName
+    .parse("cassandra:3.11")
+    .asCompatibleSubstituteFor("cassandra");
 
   private static AuditStamp createTestAuditStamp() {
     try {
@@ -97,12 +86,53 @@ public class EbeanEntityServiceTest {
 
   @BeforeMethod
   public void setupTest() {
-    _server = EbeanServerFactory.create(createTestingH2ServerConfig());
+    _cassandraContainer = new CassandraContainer(IMAGE_NAME);
+    _cassandraContainer.start();
+
+    // Setup
+    Cluster cluster = _cassandraContainer.getCluster();
+    final String keyspaceName = "test";
+    final String tableName = DatastaxAspect.TABLE_NAME;
+
+    try (Session session = cluster.connect()) {
+
+      session.execute(String.format("CREATE KEYSPACE IF NOT EXISTS %s WITH replication = \n"
+              + "{'class':'SimpleStrategy','replication_factor':'1'};", keyspaceName));
+      session.execute(
+              String.format("create table %s.%s (urn varchar, \n"
+                      + "aspect varchar, \n"
+                      + "systemmetadata varchar, \n"
+                      + "version bigint, \n"
+                      + "metadata text, \n"
+                      + "createdon timestamp, \n"
+                      + "createdby varchar, \n"
+                      + "createdfor varchar, \n"
+                      + "entity varchar, \n"
+                      + "PRIMARY KEY (urn,aspect,version));",
+              keyspaceName,
+              tableName));
+
+      List<KeyspaceMetadata> keyspaces = session.getCluster().getMetadata().getKeyspaces();
+                List<KeyspaceMetadata> filteredKeyspaces = keyspaces
+                  .stream()
+                  .filter(km -> km.getName().equals(keyspaceName))
+                  .collect(Collectors.toList());
+
+                assertEquals(filteredKeyspaces.size(), 1);
+    }
+
+    Map<String, String> serverConfig = new HashMap<String, String>() {{
+      put("keyspace", keyspaceName);
+      put("username", _cassandraContainer.getUsername());
+      put("password", _cassandraContainer.getPassword());
+      put("hosts", _cassandraContainer.getHost());
+      put("port", _cassandraContainer.getMappedPort(9042).toString());
+      put("datacenter", "datacenter1");
+      put("useSsl", "false");
+    }};
+    _aspectDao = new DatastaxAspectDao(serverConfig);
     _mockProducer = mock(EntityEventProducer.class);
-    _aspectDao = new EbeanAspectDao(_server);
-    _changeStreamProcessor = new ChangeStreamProcessor();
-    _aspectDao.setConnectionValidated(true);
-    _entityService = new EbeanEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
+    _entityService = new DatastaxEntityService(_aspectDao, _mockProducer, _testEntityRegistry);
   }
 
   @Test
@@ -130,8 +160,8 @@ public class EbeanEntityServiceTest {
     assertTrue(DataTemplateUtil.areEqual(expectedKey,
         readEntity.getValue().getCorpUserSnapshot().getAspects().get(0).getCorpUserKey())); // Key + Info aspect.
 
-    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
     verifyNoMoreInteractions(_mockProducer);
   }
 
@@ -160,8 +190,8 @@ public class EbeanEntityServiceTest {
     assertTrue(DataTemplateUtil.areEqual(expectedKey,
         readEntity.getValue().getCorpUserSnapshot().getAspects().get(0).getCorpUserKey())); // Key + Info aspect.
 
-    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
     verifyNoMoreInteractions(_mockProducer);
   }
 
@@ -212,11 +242,11 @@ public class EbeanEntityServiceTest {
     assertTrue(DataTemplateUtil.areEqual(expectedKey2,
         readEntity2.getValue().getCorpUserSnapshot().getAspects().get(0).getCorpUserKey())); // Key + Info aspect.
 
-    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn1), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn1), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
 
-    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn2), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(2)).produceMetadataAuditEvent(Mockito.eq(entityUrn2), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
 
     verifyNoMoreInteractions(_mockProducer);
   }
@@ -228,7 +258,6 @@ public class EbeanEntityServiceTest {
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
     String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
-    String entityName = "corpUser";
 
     SystemMetadata metadata1 = new SystemMetadata();
     metadata1.setLastObserved(1625792689);
@@ -239,28 +268,29 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
     RecordTemplate readAspect1 = _entityService.getLatestAspect(entityUrn, aspectName);
+
     assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspect1));
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
 
     // Validate retrieval of CorpUserInfo Aspect #2
-    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
     RecordTemplate readAspect2 = _entityService.getLatestAspect(entityUrn, aspectName);
-    EbeanAspectV2 readEbean1 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 1);
-    EbeanAspectV2 readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
+    DatastaxAspect readEbean1 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 1);
+    DatastaxAspect readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
 
     assertTrue(DataTemplateUtil.areEqual(writeAspect2, readAspect2));
     assertTrue(DataTemplateUtil.areEqual(EntityUtils.parseSystemMetadata(readEbean2.getSystemMetadata()), metadata2));
     assertTrue(DataTemplateUtil.areEqual(EntityUtils.parseSystemMetadata(readEbean1.getSystemMetadata()), metadata1));
 
-    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
 
-    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.notNull(), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.notNull(), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
 
     verifyNoMoreInteractions(_mockProducer);
   }
@@ -272,7 +302,6 @@ public class EbeanEntityServiceTest {
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
     String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
-    String entityName = "corpUser";
 
     SystemMetadata metadata1 = new SystemMetadata();
     metadata1.setLastObserved(1625792689);
@@ -283,7 +312,7 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
     RecordTemplate readAspect1 = _entityService.getLatestAspect(entityUrn, aspectName);
     assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspect1));
 
@@ -291,9 +320,9 @@ public class EbeanEntityServiceTest {
     CorpUserInfo writeAspect2 = createCorpUserInfo("email@test.com");
 
     // Validate retrieval of CorpUserInfo Aspect #2
-    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
     RecordTemplate readAspect2 = _entityService.getLatestAspect(entityUrn, aspectName);
-    EbeanAspectV2 readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
+    DatastaxAspect readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
 
     assertTrue(DataTemplateUtil.areEqual(writeAspect2, readAspect2));
     assertFalse(DataTemplateUtil.areEqual(EntityUtils.parseSystemMetadata(readEbean2.getSystemMetadata()), metadata2));
@@ -305,11 +334,11 @@ public class EbeanEntityServiceTest {
 
     assertTrue(DataTemplateUtil.areEqual(EntityUtils.parseSystemMetadata(readEbean2.getSystemMetadata()), metadata3));
 
-    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
 
-    verify(_mockProducer, times(0)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.notNull(), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(0)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.notNull(), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
 
     verifyNoMoreInteractions(_mockProducer);
   }
@@ -325,45 +354,69 @@ public class EbeanEntityServiceTest {
     metadata1.setRunId("run-123");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
-    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // List aspects
     ListResult<RecordTemplate> batch1 = _entityService.listLatestAspects(entityUrn1.getEntityType(), aspectName, 0, 2);
 
-    assertEquals(2, batch1.getNextStart());
-    assertEquals(2, batch1.getPageSize());
-    assertEquals(3, batch1.getTotalCount());
-    assertEquals(2, batch1.getTotalPageCount());
-    assertEquals(2, batch1.getValues().size());
-    assertTrue(DataTemplateUtil.areEqual(writeAspect1, batch1.getValues().get(0)));
-    assertTrue(DataTemplateUtil.areEqual(writeAspect2, batch1.getValues().get(1)));
+    assertEquals(batch1.getNextStart(), 2);
+    assertEquals(batch1.getPageSize(), 2);
+    assertEquals(batch1.getTotalCount(), 3);
+    assertEquals(batch1.getTotalPageCount(), 2);
+    assertEquals(batch1.getValues().size(), 2);
+
 
     ListResult<RecordTemplate> batch2 = _entityService.listLatestAspects(entityUrn1.getEntityType(), aspectName, 2, 2);
     assertEquals(1, batch2.getValues().size());
-    assertTrue(DataTemplateUtil.areEqual(writeAspect3, batch2.getValues().get(0)));
+
+    // https://stackoverflow.com/questions/14880450/java-hashset-with-a-custom-equality-criteria
+    Equivalence<RecordTemplate> recordTemplateEquivalence = new Equivalence<RecordTemplate>() {
+      @Override
+      protected boolean doEquivalent(RecordTemplate a, RecordTemplate b) {
+        return DataTemplateUtil.areEqual(a, b);
+      }
+
+      @Override
+      protected int doHash(RecordTemplate item) {
+        return item.hashCode();
+      }
+    };
+
+    Set<Equivalence.Wrapper<RecordTemplate>> expectedEntities = new HashSet<Equivalence.Wrapper<RecordTemplate>>() {{
+      add(recordTemplateEquivalence.wrap(writeAspect1));
+      add(recordTemplateEquivalence.wrap(writeAspect2));
+      add(recordTemplateEquivalence.wrap(writeAspect3));
+    }};
+
+    Set<Equivalence.Wrapper<RecordTemplate>> actualEntities = new HashSet<Equivalence.Wrapper<RecordTemplate>>() {{
+      add(recordTemplateEquivalence.wrap(batch1.getValues().get(0)));
+      add(recordTemplateEquivalence.wrap(batch1.getValues().get(1)));
+      add(recordTemplateEquivalence.wrap(batch2.getValues().get(0)));
+    }};
+
+    assertTrue(actualEntities.equals(expectedEntities));
   }
 
   @Test
-  public void testIngestTimeseriesAspect() throws Exception {
+  public void testIngestTemporalAspect() throws Exception {
     Urn entityUrn = Urn.createFromString("urn:li:dataset:(urn:li:dataPlatform:foo,bar,PROD)");
     DatasetProfile datasetProfile = new DatasetProfile();
     datasetProfile.setRowCount(1000);
     datasetProfile.setColumnCount(15);
     MetadataChangeProposal gmce = new MetadataChangeProposal();
     gmce.setEntityUrn(entityUrn);
-    gmce.setChangeType(ChangeType.UPSERT);
+    gmce.setChangeType(ChangeType.CREATE);
     gmce.setEntityType("dataset");
     gmce.setAspectName("datasetProfile");
     JacksonDataTemplateCodec dataTemplateCodec = new JacksonDataTemplateCodec();
@@ -389,8 +442,8 @@ public class EbeanEntityServiceTest {
     _entityService.updateAspect(entityUrn, aspectName, writeAspect, TEST_AUDIT_STAMP, 1, true);
     RecordTemplate readAspect1 = _entityService.getAspect(entityUrn, aspectName, 1);
     assertTrue(DataTemplateUtil.areEqual(writeAspect, readAspect1));
-    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
     // Ingest CorpUserInfo Aspect #2
     writeAspect.setEmail("newemail@test.com");
 
@@ -419,9 +472,10 @@ public class EbeanEntityServiceTest {
     writtenVersionedAspect.setVersion(1);
 
     VersionedAspect readAspect1 = _entityService.getVersionedAspect(entityUrn, aspectName, 1);
+
     assertTrue(DataTemplateUtil.areEqual(writtenVersionedAspect, readAspect1));
-    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), any(), any(),
-        any(), Mockito.eq(MetadataAuditOperation.UPDATE));
+    verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), Mockito.any(),
+        Mockito.any(), Mockito.any(), Mockito.eq(MetadataAuditOperation.UPDATE));
 
     VersionedAspect readAspect2 = _entityService.getVersionedAspect(entityUrn, aspectName, -1);
     assertTrue(DataTemplateUtil.areEqual(writtenVersionedAspect, readAspect2));
@@ -447,23 +501,22 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
-    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since this run has been overwritten
     AspectRowSummary rollbackOverwrittenAspect = new AspectRowSummary();
@@ -507,18 +560,17 @@ public class EbeanEntityServiceTest {
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
     String keyAspectName = _entityService.getKeyAspectName(entityUrn1);
-    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     RecordTemplate writeKey1 = _entityService.buildKeyAspect(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, entityName, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since the key should have been written in the furst run
     AspectRowSummary rollbackKeyWithWrongRunId = new AspectRowSummary();
@@ -563,27 +615,26 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
-    String entityName = "corpUser";
     String keyAspectName = _entityService.getKeyAspectName(entityUrn1);
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     RecordTemplate writeKey1 = _entityService.buildKeyAspect(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, entityName, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since the key should have been written in the furst run
     AspectRowSummary rollbackKeyWithWrongRunId = new AspectRowSummary();
@@ -613,37 +664,49 @@ public class EbeanEntityServiceTest {
     metadata1.setRunId("run-123");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserKey().schema());
-    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     RecordTemplate writeAspect1 = createCorpUserKey(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     RecordTemplate writeAspect2 = createCorpUserKey(entityUrn2);
-    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     RecordTemplate writeAspect3 = createCorpUserKey(entityUrn3);
-    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // List aspects urns
-    ListUrnsResult batch1 = _entityService.listUrns(entityUrn1.getEntityType(), 0, 2);
+    ListUrnsResult batch1 = _entityService.listUrns(entityUrn1.getEntityType(),  0, 2);
 
     assertEquals(0, (int) batch1.getStart());
     assertEquals(2, (int) batch1.getCount());
     assertEquals(3, (int) batch1.getTotal());
     assertEquals(2, batch1.getEntities().size());
-    assertEquals(entityUrn1.toString(), batch1.getEntities().get(0).toString());
-    assertEquals(entityUrn2.toString(), batch1.getEntities().get(1).toString());
 
-    ListUrnsResult batch2 = _entityService.listUrns(entityUrn1.getEntityType(), 2, 2);
+    final Set<String> urns = new HashSet<>();
+    urns.add(entityUrn1.toString());
+    urns.add(entityUrn2.toString());
+    urns.add(entityUrn3.toString());
+
+    urns.remove(batch1.getEntities().get(0).toString());
+    urns.remove(batch1.getEntities().get(1).toString());
+
+    ListUrnsResult batch2 = _entityService.listUrns(entityUrn1.getEntityType(),  2, 2);
 
     assertEquals(2, (int) batch2.getStart());
     assertEquals(1, (int) batch2.getCount());
     assertEquals(3, (int) batch2.getTotal());
     assertEquals(1, batch2.getEntities().size());
-    assertEquals(entityUrn3.toString(), batch2.getEntities().get(0).toString());
+    urns.remove(batch2.getEntities().get(0).toString());
+
+    assertEquals(0, urns.size());
+  }
+
+  @AfterTest
+  public void tearDown() {
+    _cassandraContainer.stop();
   }
 
   @Nonnull
@@ -659,69 +722,6 @@ public class EbeanEntityServiceTest {
     snapshot.setCorpUserSnapshot(corpUserSnapshot);
     entity.setValue(snapshot);
     return entity;
-  }
-
-  @Test
-  public void testInjestAspectWithChangeProcessorShouldIgnoreUpdate() throws Exception {
-    ChangeProcessor changeProcessor = mock(ChangeProcessor.class);
-
-    when(changeProcessor.process(any(), any(), any(), any())).thenReturn(ChangeResult.failure("Fail"));
-    String entityName = "corpUser";
-
-    _changeStreamProcessor.registerPreProcessor(entityName, "corpUserInfo", changeProcessor);
-
-    _entityService = new EbeanEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
-
-    Urn entityUrn = Urn.createFromString("urn:li:corpuser:test");
-
-    // Ingest CorpUserInfo Aspect with bad email address
-    CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
-    SystemMetadata metadata1 = new SystemMetadata();
-    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
-    RecordTemplate readAspectOriginal = _entityService.getAspect(entityUrn, aspectName, 0);
-
-    // Should ignore updated aspect with disallowed email address
-    assertNull(readAspectOriginal);
-  }
-
-  @Test
-  public void testInjestAspectWithCustomLogicShouldIgnoreUpdates() throws Exception {
-    Urn entityUrn = Urn.createFromString("urn:li:corpuser:test");
-
-    CorpUserInfo writeAspect1 = createCorpUserInfo("email@properemail.com");
-    String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
-    String entityName = "corpUser";
-    SystemMetadata metadata1 = new SystemMetadata();
-
-    CorpUserInfo writeAspect2 = createCorpUserInfo("disallowedEmail@test.com");
-    SystemMetadata metadata2 = new SystemMetadata();
-
-    // Setup a change processor to allow the initial change
-    ChangeProcessor changeProcessor = mock(ChangeProcessor.class);
-    when(changeProcessor.process(entityName, aspectName, null, writeAspect1)).thenReturn(
-        ChangeResult.success(writeAspect1));
-
-    when(changeProcessor.process(entityName, aspectName, writeAspect1, writeAspect2)).thenReturn(
-        ChangeResult.failure("Fail"));
-
-    _changeStreamProcessor.registerPreProcessor(entityName, "corpUserInfo", changeProcessor);
-
-    _entityService = new EbeanEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
-
-    // Ingest CorpUserInfo Aspect #1 with correct email address
-    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
-    RecordTemplate readAspectOriginal = _entityService.getAspect(entityUrn, aspectName, 0);
-
-    // Shouldn't ignore correct email address
-    assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspectOriginal));
-
-    // Ingest CorpUserInfo Aspect #2 with bad email address
-    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
-    RecordTemplate readAspectOriginalUnchanged = _entityService.getAspect(entityUrn, aspectName, 0);
-
-    // Should ignore updated aspect with disallowed email address
-    assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspectOriginalUnchanged));
   }
 
   @Nonnull

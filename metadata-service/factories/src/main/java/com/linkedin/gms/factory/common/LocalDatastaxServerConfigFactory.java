@@ -19,7 +19,7 @@ public class LocalDatastaxServerConfigFactory {
   @Value("${DATASTAX_DATASOURCE_PASSWORD:cassandra}")
   private String datastaxDatasourcePassword;
 
-  @Value("${DATASTAX_HOSTS:cassandra}")
+  @Value("${DATASTAX_HOSTS:localhost}")
   private String datastaxHosts;
 
   @Value("${DATASTAX_PORT:9042}")

@@ -27,16 +27,18 @@ public class EntityServiceFactory {
   ApplicationContext applicationContext;
 
   @Bean(name = "entityService")
-  @DependsOn({"datastaxAspectDao", "kafkaEventProducer", TopicConventionFactory.TOPIC_CONVENTION_BEAN, "entityRegistry"})
+  @DependsOn({"datastaxAspectDao", "kafkaEventProducer", TopicConventionFactory.TOPIC_CONVENTION_BEAN,
+      "entityRegistry"})
   @ConditionalOnProperty(name = "DAO_SERVICE_LAYER", havingValue = "datastax")
   @Nonnull
   protected EntityService createDatastaxInstance() {
 
     final EntityKafkaMetadataEventProducer producer =
-            new EntityKafkaMetadataEventProducer(applicationContext.getBean(Producer.class),
-                    applicationContext.getBean(TopicConvention.class));
+        new EntityKafkaMetadataEventProducer(applicationContext.getBean(Producer.class),
+            applicationContext.getBean(TopicConvention.class));
 
-    return new DatastaxEntityService(applicationContext.getBean(DatastaxAspectDao.class), producer, applicationContext.getBean(EntityRegistry.class));
+    return new DatastaxEntityService(applicationContext.getBean(DatastaxAspectDao.class), producer,
+        applicationContext.getBean(EntityRegistry.class), changeProcessorFactory.createInstance());
   }
 
   @Autowired

@@ -16,6 +16,7 @@ import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.dataset.DatasetProfile;
 import com.linkedin.events.metadata.ChangeType;
 import com.linkedin.identity.CorpUserInfo;
+import com.linkedin.metadata.changeprocessor.ChangeStreamProcessor;
 import com.linkedin.metadata.query.ListUrnsResult;
 import com.linkedin.metadata.utils.EntityKeyUtils;
 import com.linkedin.metadata.utils.PegasusUtils;
@@ -71,10 +72,10 @@ public class DatastaxEntityServiceTest {
   private EntityEventProducer _mockProducer;
   private DatastaxAspectDao _aspectDao;
   private CassandraContainer _cassandraContainer;
+  private ChangeStreamProcessor _changeStreamProcessor;
 
-  private static final DockerImageName IMAGE_NAME = DockerImageName
-    .parse("cassandra:3.11")
-    .asCompatibleSubstituteFor("cassandra");
+  private static final DockerImageName IMAGE_NAME =
+      DockerImageName.parse("cassandra:3.11").asCompatibleSubstituteFor("cassandra");
 
   private static AuditStamp createTestAuditStamp() {
     try {
@@ -97,28 +98,18 @@ public class DatastaxEntityServiceTest {
     try (Session session = cluster.connect()) {
 
       session.execute(String.format("CREATE KEYSPACE IF NOT EXISTS %s WITH replication = \n"
-              + "{'class':'SimpleStrategy','replication_factor':'1'};", keyspaceName));
-      session.execute(
-              String.format("create table %s.%s (urn varchar, \n"
-                      + "aspect varchar, \n"
-                      + "systemmetadata varchar, \n"
-                      + "version bigint, \n"
-                      + "metadata text, \n"
-                      + "createdon timestamp, \n"
-                      + "createdby varchar, \n"
-                      + "createdfor varchar, \n"
-                      + "entity varchar, \n"
-                      + "PRIMARY KEY (urn,aspect,version));",
-              keyspaceName,
-              tableName));
+          + "{'class':'SimpleStrategy','replication_factor':'1'};", keyspaceName));
+      session.execute(String.format(
+          "create table %s.%s (urn varchar, \n" + "aspect varchar, \n" + "systemmetadata varchar, \n"
+              + "version bigint, \n" + "metadata text, \n" + "createdon timestamp, \n" + "createdby varchar, \n"
+              + "createdfor varchar, \n" + "entity varchar, \n" + "PRIMARY KEY (urn,aspect,version));", keyspaceName,
+          tableName));
 
       List<KeyspaceMetadata> keyspaces = session.getCluster().getMetadata().getKeyspaces();
-                List<KeyspaceMetadata> filteredKeyspaces = keyspaces
-                  .stream()
-                  .filter(km -> km.getName().equals(keyspaceName))
-                  .collect(Collectors.toList());
+      List<KeyspaceMetadata> filteredKeyspaces =
+          keyspaces.stream().filter(km -> km.getName().equals(keyspaceName)).collect(Collectors.toList());
 
-                assertEquals(filteredKeyspaces.size(), 1);
+      assertEquals(filteredKeyspaces.size(), 1);
     }
 
     Map<String, String> serverConfig = new HashMap<String, String>() {{
@@ -132,7 +123,8 @@ public class DatastaxEntityServiceTest {
     }};
     _aspectDao = new DatastaxAspectDao(serverConfig);
     _mockProducer = mock(EntityEventProducer.class);
-    _entityService = new DatastaxEntityService(_aspectDao, _mockProducer, _testEntityRegistry);
+    _changeStreamProcessor = new ChangeStreamProcessor();
+    _entityService = new DatastaxEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
   }
 
   @Test
@@ -257,6 +249,7 @@ public class DatastaxEntityServiceTest {
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
+    String entityName = "corpUser";
     String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
 
     SystemMetadata metadata1 = new SystemMetadata();
@@ -268,7 +261,7 @@ public class DatastaxEntityServiceTest {
     metadata2.setRunId("run-456");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
     RecordTemplate readAspect1 = _entityService.getLatestAspect(entityUrn, aspectName);
 
     assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspect1));
@@ -277,7 +270,7 @@ public class DatastaxEntityServiceTest {
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
 
     // Validate retrieval of CorpUserInfo Aspect #2
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
     RecordTemplate readAspect2 = _entityService.getLatestAspect(entityUrn, aspectName);
     DatastaxAspect readEbean1 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 1);
     DatastaxAspect readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
@@ -302,6 +295,7 @@ public class DatastaxEntityServiceTest {
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
     String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
+    String entityName = "corpUser";
 
     SystemMetadata metadata1 = new SystemMetadata();
     metadata1.setLastObserved(1625792689);
@@ -312,7 +306,7 @@ public class DatastaxEntityServiceTest {
     metadata2.setRunId("run-456");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
     RecordTemplate readAspect1 = _entityService.getLatestAspect(entityUrn, aspectName);
     assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspect1));
 
@@ -320,7 +314,7 @@ public class DatastaxEntityServiceTest {
     CorpUserInfo writeAspect2 = createCorpUserInfo("email@test.com");
 
     // Validate retrieval of CorpUserInfo Aspect #2
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
     RecordTemplate readAspect2 = _entityService.getLatestAspect(entityUrn, aspectName);
     DatastaxAspect readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
 
@@ -353,19 +347,20 @@ public class DatastaxEntityServiceTest {
     metadata1.setLastObserved(1625792689);
     metadata1.setRunId("run-123");
 
+    String entityName = "corpUser";
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // List aspects
     ListResult<RecordTemplate> batch1 = _entityService.listLatestAspects(entityUrn1.getEntityType(), aspectName, 0, 2);
@@ -375,7 +370,6 @@ public class DatastaxEntityServiceTest {
     assertEquals(batch1.getTotalCount(), 3);
     assertEquals(batch1.getTotalPageCount(), 2);
     assertEquals(batch1.getValues().size(), 2);
-
 
     ListResult<RecordTemplate> batch2 = _entityService.listLatestAspects(entityUrn1.getEntityType(), aspectName, 2, 2);
     assertEquals(1, batch2.getValues().size());
@@ -500,23 +494,24 @@ public class DatastaxEntityServiceTest {
     metadata2.setLastObserved(1635792689);
     metadata2.setRunId("run-456");
 
+    String entityName = "corpUser";
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since this run has been overwritten
     AspectRowSummary rollbackOverwrittenAspect = new AspectRowSummary();
@@ -558,19 +553,20 @@ public class DatastaxEntityServiceTest {
     metadata2.setLastObserved(1635792689);
     metadata2.setRunId("run-456");
 
+    String entityName = "corpUser";
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
     String keyAspectName = _entityService.getKeyAspectName(entityUrn1);
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     RecordTemplate writeKey1 = _entityService.buildKeyAspect(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since the key should have been written in the furst run
     AspectRowSummary rollbackKeyWithWrongRunId = new AspectRowSummary();
@@ -614,27 +610,28 @@ public class DatastaxEntityServiceTest {
     metadata2.setLastObserved(1635792689);
     metadata2.setRunId("run-456");
 
+    String entityName = "corpUser";
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
     String keyAspectName = _entityService.getKeyAspectName(entityUrn1);
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     RecordTemplate writeKey1 = _entityService.buildKeyAspect(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since the key should have been written in the furst run
     AspectRowSummary rollbackKeyWithWrongRunId = new AspectRowSummary();
@@ -663,22 +660,23 @@ public class DatastaxEntityServiceTest {
     metadata1.setLastObserved(1625792689);
     metadata1.setRunId("run-123");
 
+    String entityName = "corpUser";
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserKey().schema());
 
     // Ingest CorpUserInfo Aspect #1
     RecordTemplate writeAspect1 = createCorpUserKey(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     RecordTemplate writeAspect2 = createCorpUserKey(entityUrn2);
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     RecordTemplate writeAspect3 = createCorpUserKey(entityUrn3);
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // List aspects urns
-    ListUrnsResult batch1 = _entityService.listUrns(entityUrn1.getEntityType(),  0, 2);
+    ListUrnsResult batch1 = _entityService.listUrns(entityUrn1.getEntityType(), 0, 2);
 
     assertEquals(0, (int) batch1.getStart());
     assertEquals(2, (int) batch1.getCount());
@@ -693,7 +691,7 @@ public class DatastaxEntityServiceTest {
     urns.remove(batch1.getEntities().get(0).toString());
     urns.remove(batch1.getEntities().get(1).toString());
 
-    ListUrnsResult batch2 = _entityService.listUrns(entityUrn1.getEntityType(),  2, 2);
+    ListUrnsResult batch2 = _entityService.listUrns(entityUrn1.getEntityType(), 2, 2);
 
     assertEquals(2, (int) batch2.getStart());
     assertEquals(1, (int) batch2.getCount());

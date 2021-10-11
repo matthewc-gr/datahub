@@ -3,20 +3,23 @@ package com.linkedin.metadata.entity;
 import com.linkedin.common.urn.Urn;
 import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.template.RecordTemplate;
+import com.linkedin.metadata.entity.RecordTemplateValidator;
 import com.linkedin.metadata.utils.PegasusUtils;
 import com.linkedin.metadata.dao.utils.RecordUtils;
 import com.linkedin.metadata.models.AspectSpec;
 import com.linkedin.metadata.models.EntitySpec;
 import com.linkedin.metadata.models.registry.EntityRegistry;
 import com.linkedin.mxe.SystemMetadata;
+import lombok.extern.slf4j.Slf4j;
+
 import javax.annotation.Nonnull;
 
 import static com.linkedin.metadata.utils.PegasusUtils.getDataTemplateClassFromSchema;
 import static com.linkedin.metadata.entity.EntityService.*;
 
-
-public class EntityUtils {
-  private EntityUtils() {
+@Slf4j
+public class EbeanUtils {
+  private EbeanUtils() {
   }
 
   @Nonnull
@@ -34,7 +37,12 @@ public class EntityUtils {
     final EntitySpec entitySpec = entityRegistry.getEntitySpec(entityName);
     final AspectSpec aspectSpec = entitySpec.getAspectSpec(aspectName);
     final RecordDataSchema aspectSchema = aspectSpec.getPegasusSchema();
-    return RecordUtils.toRecordTemplate(getDataTemplateClassFromSchema(aspectSchema, RecordTemplate.class), jsonAspect);
+    RecordTemplate aspectRecord = RecordUtils.toRecordTemplate(getDataTemplateClassFromSchema(aspectSchema,
+            RecordTemplate.class), jsonAspect);
+    RecordTemplateValidator.validate(aspectRecord, validationFailure -> {
+      log.warn(String.format("Failed to validate record %s against its schema.", aspectRecord));
+    });
+    return aspectRecord;
   }
 
   public static SystemMetadata parseSystemMetadata(String jsonSystemMetadata) {

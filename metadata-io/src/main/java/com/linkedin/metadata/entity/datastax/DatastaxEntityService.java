@@ -1,26 +1,36 @@
 package com.linkedin.metadata.entity.datastax;
 
+import com.codahale.metrics.Timer;
 import com.datastax.oss.driver.api.core.cql.ResultSet;
 import com.linkedin.common.AuditStamp;
 import com.linkedin.common.UrnArray;
 import com.linkedin.common.urn.Urn;
 import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.RecordTemplate;
+import com.linkedin.events.metadata.ChangeType;
 import com.linkedin.metadata.aspect.Aspect;
 import com.linkedin.metadata.aspect.VersionedAspect;
 import com.linkedin.metadata.changeprocessor.ChangeResult;
 import com.linkedin.metadata.changeprocessor.ChangeState;
 import com.linkedin.metadata.changeprocessor.ChangeStreamProcessor;
+import com.linkedin.metadata.dao.exception.ModelConversionException;
 import com.linkedin.metadata.dao.utils.RecordUtils;
 import com.linkedin.metadata.entity.EntityService;
 import com.linkedin.metadata.entity.ListResult;
 import com.linkedin.metadata.entity.RollbackResult;
 import com.linkedin.metadata.entity.RollbackRunResult;
+import com.linkedin.metadata.entity.ebean.EbeanEntityService;
 import com.linkedin.metadata.event.EntityEventProducer;
+import com.linkedin.metadata.models.AspectSpec;
+import com.linkedin.metadata.models.EntitySpec;
 import com.linkedin.metadata.models.registry.EntityRegistry;
 import com.linkedin.metadata.query.ListUrnsResult;
 import com.linkedin.metadata.run.AspectRowSummary;
+import com.linkedin.metadata.utils.EntityKeyUtils;
+import com.linkedin.metadata.utils.GenericAspectUtils;
+import com.linkedin.metadata.utils.metrics.MetricUtils;
 import com.linkedin.mxe.MetadataAuditOperation;
+import com.linkedin.mxe.MetadataChangeLog;
 import com.linkedin.mxe.MetadataChangeProposal;
 import com.linkedin.mxe.SystemMetadata;
 
@@ -190,8 +200,8 @@ public class DatastaxEntityService extends EntityService {
       @Nonnull final SystemMetadata systemMetadata) {
     log.debug("Invoked ingestAspect with urn: {}, aspectName: {}, newValue: {}", urn, aspectName, newValue);
 
-    UpdateAspectResult result =
-        ingestAspectToLocalDB(urn, entityName, aspectName, newValue, auditStamp, systemMetadata, DEFAULT_MAX_CONDITIONAL_RETRY);
+    UpdateAspectResult result = ingestAspectToLocalDB(urn, entityName, aspectName, newValue, auditStamp, systemMetadata,
+        DEFAULT_MAX_CONDITIONAL_RETRY);
 
     final RecordTemplate oldValue = result.getOldValue();
     final RecordTemplate updatedValue = result.getNewValue();
@@ -241,11 +251,12 @@ public class DatastaxEntityService extends EntityService {
       final RecordTemplate previousValue = latest == null ? null
           : EntityUtils.toAspectRecord(urn, aspectName, latest.getMetadata(), getEntityRegistry());
 
-      ChangeResult changeResult = changeStreamProcessor.preProcessChange(entityName, aspectName, previousValue, newValue);
+      ChangeResult changeResult =
+          changeStreamProcessor.preProcessChange(entityName, aspectName, previousValue, newValue);
 
       if (changeResult.changeState == ChangeState.FAILURE) {
-        // Todo create checked exception
-        throw new IllegalStateException("BLAH");
+        // Todo bubble up exception message to service users.
+        throw new RuntimeException(changeResult.message);
       }
 
       RecordTemplate modifiedAspect = changeResult.aspect;
@@ -268,13 +279,17 @@ public class DatastaxEntityService extends EntityService {
 
       log.debug(String.format("Ingesting aspect with name %s, urn %s", aspectName, urn));
 
-      entityDao.batchSaveLatestAspect(urn.toString(), aspectName,
-          latest == null ? null : EntityUtils.toJsonAspect(previousValue),
-          latest == null ? null : latest.getCreatedBy(),
-          latest == null ? null : latest.getCreatedFor(), latest == null ? null : latest.getCreatedOn(),
-          latest == null ? null : latest.getSystemMetadata(), EntityUtils.toJsonAspect(newValue),
-          auditStamp.getActor().toString(),
-          auditStamp.hasImpersonator() ? auditStamp.getImpersonator().toString() : null,
+      String previousValueJson = latest == null ? null : EntityUtils.toJsonAspect(previousValue);
+
+      String oldActor = latest == null ? null : latest.getCreatedBy();
+      String oldImpersonator = latest == null ? null : latest.getCreatedFor();
+      Timestamp oldCreatedOn = latest == null ? null : latest.getCreatedOn();
+      String oldSystemMetadata = latest == null ? null : latest.getSystemMetadata();
+      String newAspectMetadata = EntityUtils.toJsonAspect(newValue);
+      String newImpersonator = auditStamp.hasImpersonator() ? auditStamp.getImpersonator().toString() : null;
+
+      entityDao.batchSaveLatestAspect(urn.toString(), aspectName, previousValueJson, oldActor, oldImpersonator,
+          oldCreatedOn, oldSystemMetadata, newAspectMetadata, auditStamp.getActor().toString(), newImpersonator,
           new Timestamp(auditStamp.getTime()), EntityUtils.toJsonAspect(providedSystemMetadata), nextVersion);
 
       return new UpdateAspectResult(urn, previousValue, newValue,
@@ -358,7 +373,91 @@ public class DatastaxEntityService extends EntityService {
 
   @Override
   public Urn ingestProposal(@Nonnull MetadataChangeProposal metadataChangeProposal, AuditStamp auditStamp) {
-    return null;
+    log.debug("entity type = {}", metadataChangeProposal.getEntityType());
+    EntitySpec entitySpec = getEntityRegistry().getEntitySpec(metadataChangeProposal.getEntityType());
+    log.debug("entity spec = {}", entitySpec);
+
+    Urn entityUrn = EntityKeyUtils.getUrnFromProposal(metadataChangeProposal, entitySpec.getKeyAspectSpec());
+
+    if (metadataChangeProposal.getChangeType() != ChangeType.UPSERT) {
+      throw new UnsupportedOperationException("Only upsert operation is supported");
+    }
+
+    if (!metadataChangeProposal.hasAspectName() || !metadataChangeProposal.hasAspect()) {
+      throw new UnsupportedOperationException("Aspect and aspect name is required for create and update operations");
+    }
+
+    AspectSpec aspectSpec = entitySpec.getAspectSpec(metadataChangeProposal.getAspectName());
+
+    if (aspectSpec == null) {
+      throw new RuntimeException(
+          String.format("Unknown aspect {} for entity {}", metadataChangeProposal.getAspectName(),
+              metadataChangeProposal.getEntityType()));
+    }
+
+    log.debug("aspect spec = {}", aspectSpec);
+
+    RecordTemplate aspect;
+    try {
+      aspect = GenericAspectUtils.deserializeAspect(metadataChangeProposal.getAspect().getValue(),
+          metadataChangeProposal.getAspect().getContentType(), aspectSpec);
+    } catch (ModelConversionException e) {
+      throw new RuntimeException(
+          String.format("Could not deserialize {} for aspect {}", metadataChangeProposal.getAspect().getValue(),
+              metadataChangeProposal.getAspectName()));
+    }
+    log.debug("aspect = {}", aspect);
+
+    SystemMetadata systemMetadata = metadataChangeProposal.getSystemMetadata();
+    if (systemMetadata == null) {
+      systemMetadata = new SystemMetadata();
+      systemMetadata.setRunId(DEFAULT_RUN_ID);
+      systemMetadata.setLastObserved(System.currentTimeMillis());
+    }
+
+    RecordTemplate oldAspect = null;
+    SystemMetadata oldSystemMetadata = null;
+    RecordTemplate newAspect = aspect;
+    SystemMetadata newSystemMetadata = systemMetadata;
+
+    if (!aspectSpec.isTimeseries()) {
+      Timer.Context ingestToLocalDBTimer = MetricUtils.timer(this.getClass(), "ingestProposalToLocalDB").time();
+      UpdateAspectResult result = ingestAspectToLocalDB(entityUrn, metadataChangeProposal.getEntityType(),
+          metadataChangeProposal.getAspectName(), aspect, auditStamp, systemMetadata, DEFAULT_MAX_CONDITIONAL_RETRY);
+      ingestToLocalDBTimer.stop();
+      oldAspect = result.oldValue;
+      oldSystemMetadata = result.oldSystemMetadata;
+      newAspect = result.newValue;
+      newSystemMetadata = result.newSystemMetadata;
+    }
+
+    if (oldAspect != newAspect || alwaysEmitAuditEvent) {
+      log.debug(String.format("Producing MetadataChangeLog for ingested aspect %s, urn %s",
+          metadataChangeProposal.getAspectName(), entityUrn));
+
+      final MetadataChangeLog metadataChangeLog = new MetadataChangeLog(metadataChangeProposal.data());
+      if (oldAspect != null) {
+        metadataChangeLog.setPreviousAspectValue(GenericAspectUtils.serializeAspect(oldAspect));
+      }
+      if (oldSystemMetadata != null) {
+        metadataChangeLog.setPreviousSystemMetadata(oldSystemMetadata);
+      }
+      if (newAspect != null) {
+        metadataChangeLog.setAspect(GenericAspectUtils.serializeAspect(newAspect));
+      }
+      if (newSystemMetadata != null) {
+        metadataChangeLog.setSystemMetadata(newSystemMetadata);
+      }
+
+      log.debug(String.format("Serialized MCL event: %s", metadataChangeLog));
+      // Since only timeseries aspects are ingested as of now, simply produce mae event for it
+      produceMetadataChangeLog(entityUrn, aspectSpec, metadataChangeLog);
+    } else {
+      log.debug(
+          String.format("Skipped producing MetadataAuditEvent for ingested aspect %s, urn %s. Aspect has not changed.",
+              metadataChangeProposal.getAspectName(), entityUrn));
+    }
+    return entityUrn;
   }
 
   @Value

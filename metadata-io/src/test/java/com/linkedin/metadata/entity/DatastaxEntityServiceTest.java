@@ -48,13 +48,11 @@ import org.mockito.Mockito;
 import org.testcontainers.containers.CassandraContainer;
 import org.testcontainers.utility.DockerImageName;
 import org.testng.annotations.AfterTest;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.*;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
@@ -85,8 +83,8 @@ public class DatastaxEntityServiceTest {
     }
   }
 
-  @BeforeMethod
-  public void setupTest() {
+  @BeforeClass
+  public void setupTestClass() {
     _cassandraContainer = new CassandraContainer(IMAGE_NAME);
     _cassandraContainer.start();
 
@@ -125,6 +123,14 @@ public class DatastaxEntityServiceTest {
     _mockProducer = mock(EntityEventProducer.class);
     _changeStreamProcessor = new ChangeStreamProcessor();
     _entityService = new DatastaxEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
+  }
+
+  @BeforeMethod
+  public void setupTest() {
+    try (Session session = _cassandraContainer.getCluster().connect()) {
+      session.execute(String.format("TRUNCATE TABLE %s.%s", "test", DatastaxAspect.TABLE_NAME));
+    }
+    clearInvocations(_mockProducer);
   }
 
   @Test
@@ -403,14 +409,14 @@ public class DatastaxEntityServiceTest {
   }
 
   @Test
-  public void testIngestTemporalAspect() throws Exception {
+  public void testIngestTimeseriesAspect() throws Exception {
     Urn entityUrn = Urn.createFromString("urn:li:dataset:(urn:li:dataPlatform:foo,bar,PROD)");
     DatasetProfile datasetProfile = new DatasetProfile();
     datasetProfile.setRowCount(1000);
     datasetProfile.setColumnCount(15);
     MetadataChangeProposal gmce = new MetadataChangeProposal();
     gmce.setEntityUrn(entityUrn);
-    gmce.setChangeType(ChangeType.CREATE);
+    gmce.setChangeType(ChangeType.UPSERT);
     gmce.setEntityType("dataset");
     gmce.setAspectName("datasetProfile");
     JacksonDataTemplateCodec dataTemplateCodec = new JacksonDataTemplateCodec();

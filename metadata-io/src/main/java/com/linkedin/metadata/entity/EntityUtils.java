@@ -18,8 +18,8 @@ import static com.linkedin.metadata.utils.PegasusUtils.getDataTemplateClassFromS
 import static com.linkedin.metadata.entity.EntityService.*;
 
 @Slf4j
-public class EbeanUtils {
-  private EbeanUtils() {
+public class EntityUtils {
+  private EntityUtils() {
   }
 
   @Nonnull

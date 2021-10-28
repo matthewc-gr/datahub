@@ -299,20 +299,21 @@ public class DatastaxEntityService extends EntityService {
   }
 
   @Nonnull
-  public RecordTemplate updateAspect(@Nonnull final Urn urn, @Nonnull final String aspectName,
-      @Nonnull final RecordTemplate newValue, @Nonnull final AuditStamp auditStamp, final long version,
-      final boolean emitMae) {
+  public RecordTemplate updateAspect(@Nonnull final Urn urn, @Nonnull final String entityName,
+      @Nonnull final String aspectName, @Nonnull final AspectSpec aspectSpec, @Nonnull final RecordTemplate newValue,
+      @Nonnull final AuditStamp auditStamp, final long version, final boolean emitMae) {
 
     log.debug(
         String.format("Invoked updateAspect with urn: %s, aspectName: %s, newValue: %s, version: %s, emitMae: %s", urn,
             aspectName, newValue, version, emitMae));
-    return updateAspect(urn, aspectName, newValue, auditStamp, version, emitMae, DEFAULT_MAX_CONDITIONAL_RETRY);
+    return updateAspect(urn, entityName, aspectName, newValue, auditStamp, version, emitMae,
+        DEFAULT_MAX_CONDITIONAL_RETRY);
   }
 
   @Nonnull
-  private RecordTemplate updateAspect(@Nonnull final Urn urn, @Nonnull final String aspectName,
-      @Nonnull final RecordTemplate value, @Nonnull final AuditStamp auditStamp, final long version,
-      final boolean emitMae, final int maxConditionalUpdateRetry) {
+  private RecordTemplate updateAspect(@Nonnull final Urn urn, @Nonnull final String entityName,
+      @Nonnull final String aspectName, @Nonnull final RecordTemplate value, @Nonnull final AuditStamp auditStamp,
+      final long version, final boolean emitMae, final int maxConditionalUpdateRetry) {
 
     final UpdateAspectResult result = entityDao.runInConditionalWithRetry(() -> {
 

@@ -104,7 +104,6 @@ services:
     - KAFKA_BOOTSTRAP_SERVER=broker:29092
     hostname: kafka-setup
     image: linkedin/datahub-kafka-setup:${DATAHUB_VERSION:-head}
-
   cassandra:
     container_name: cassandra
     hostname: cassandra
@@ -112,13 +111,12 @@ services:
     ports:
       - '9042:9042'
     healthcheck:
-      test: ["CMD", "cqlsh", "-u cassandra", "-p cassandra" ,"-e describe keyspaces"]
+      test: [ "CMD", "cqlsh", "-u cassandra", "-p cassandra" ,"-e describe keyspaces" ]
       interval: 15s
       timeout: 10s
       retries: 10
     volumes:
       - cassandradata:/var/lib/cassandra
-
   cassandra-load-keyspace:
     container_name: cassandra-setup
     image: cassandra:3.11
@@ -129,6 +127,34 @@ services:
       - ./cassandra/init.cql:/init.cql
     command: /bin/bash -c "cqlsh cassandra -f /init.cql"
 
+
+    mysql:
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    container_name: mysql
+    environment:
+    - MYSQL_DATABASE=datahub
+    - MYSQL_USER=datahub
+    - MYSQL_PASSWORD=datahub
+    - MYSQL_ROOT_PASSWORD=datahub
+    hostname: mysql
+    image: mysql:5.7
+    ports:
+    - 3306:3306
+    volumes:
+    - ../mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    - mysqldata:/var/lib/mysql
+  mysql-setup:
+    container_name: mysql-setup
+    depends_on:
+    - mysql
+    environment:
+    - MYSQL_HOST=mysql
+    - MYSQL_PORT=3306
+    - MYSQL_USERNAME=datahub
+    - MYSQL_PASSWORD=datahub
+    - DATAHUB_DB_NAME=datahub
+    hostname: mysql-setup
+    image: acryldata/datahub-mysql-setup:head
   schema-registry:
     container_name: schema-registry
     depends_on:

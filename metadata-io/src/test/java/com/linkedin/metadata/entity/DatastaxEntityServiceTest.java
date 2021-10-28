@@ -17,6 +17,7 @@ import com.linkedin.dataset.DatasetProfile;
 import com.linkedin.events.metadata.ChangeType;
 import com.linkedin.identity.CorpUserInfo;
 import com.linkedin.metadata.changeprocessor.ChangeStreamProcessor;
+import com.linkedin.metadata.models.AspectSpec;
 import com.linkedin.metadata.query.ListUrnsResult;
 import com.linkedin.metadata.utils.EntityKeyUtils;
 import com.linkedin.metadata.utils.PegasusUtils;
@@ -434,12 +435,14 @@ public class DatastaxEntityServiceTest {
     Urn entityUrn = Urn.createFromString("urn:li:corpuser:test");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
+    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect = createCorpUserInfo("email@test.com");
+    AspectSpec aspectSpec = _testEntityRegistry.getEntitySpec("corpuser").getAspectSpec("corpUserInfo");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.updateAspect(entityUrn, aspectName, writeAspect, TEST_AUDIT_STAMP, 1, true);
+    _entityService.updateAspect(entityUrn,entityName, aspectName,  aspectSpec, writeAspect , TEST_AUDIT_STAMP, 1, true);
     RecordTemplate readAspect1 = _entityService.getAspect(entityUrn, aspectName, 1);
     assertTrue(DataTemplateUtil.areEqual(writeAspect, readAspect1));
     verify(_mockProducer, times(1)).produceMetadataAuditEvent(Mockito.eq(entityUrn), Mockito.eq(null), Mockito.any(),
@@ -448,7 +451,7 @@ public class DatastaxEntityServiceTest {
     writeAspect.setEmail("newemail@test.com");
 
     // Validate retrieval of CorpUserInfo Aspect #2
-    _entityService.updateAspect(entityUrn, aspectName, writeAspect, TEST_AUDIT_STAMP, 1, false);
+    _entityService.updateAspect(entityUrn, entityName, aspectName, aspectSpec, writeAspect, TEST_AUDIT_STAMP, 1, false);
     RecordTemplate readAspect2 = _entityService.getAspect(entityUrn, aspectName, 1);
     assertTrue(DataTemplateUtil.areEqual(writeAspect, readAspect2));
     verifyNoMoreInteractions(_mockProducer);
@@ -460,12 +463,14 @@ public class DatastaxEntityServiceTest {
     Urn entityUrn = Urn.createFromString("urn:li:corpuser:test");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
+    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect = createCorpUserInfo("email@test.com");
+    AspectSpec aspectSpec = _testEntityRegistry.getEntitySpec("corpuser").getAspectSpec("corpUserInfo");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.updateAspect(entityUrn, aspectName, writeAspect, TEST_AUDIT_STAMP, 1, true);
+    _entityService.updateAspect(entityUrn,entityName,  aspectName, aspectSpec, writeAspect, TEST_AUDIT_STAMP, 1, true);
 
     VersionedAspect writtenVersionedAspect = new VersionedAspect();
     writtenVersionedAspect.setAspect(Aspect.create(writeAspect));

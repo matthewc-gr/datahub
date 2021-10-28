@@ -22,7 +22,6 @@ dependencies {
   compile externalDependency.elasticSearchTransport
   compile externalDependency.kafkaClients
   compile externalDependency.gmaEbeanDao
-  compile externalDependency.gmaDaoApi
   compile externalDependency.gmaRestliResources
   compile externalDependency.gmaElasticsearchDao
   compile externalDependency.ebean
@@ -42,11 +41,14 @@ dependencies {
   testCompile externalDependency.mockito
   testCompile externalDependency.mockitoInline
   testCompile externalDependency.iStackCommons
+  testCompile externalDependency.resilience4j
   testCompile externalDependency.testContainers
   testCompile externalDependency.testContainersJunit
   testCompile externalDependency.testContainersElasticsearch
   testCompile externalDependency.testContainersCassandra
   testCompile project(':test-models')
+
+  testAnnotationProcessor externalDependency.lombok
 }
 
 tasks.withType(Test) {

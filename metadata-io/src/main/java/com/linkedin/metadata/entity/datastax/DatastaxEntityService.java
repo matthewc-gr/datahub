@@ -16,10 +16,11 @@ import com.linkedin.metadata.changeprocessor.ChangeStreamProcessor;
 import com.linkedin.metadata.dao.exception.ModelConversionException;
 import com.linkedin.metadata.dao.utils.RecordUtils;
 import com.linkedin.metadata.entity.EntityService;
+import com.linkedin.metadata.entity.EntityUtils;
 import com.linkedin.metadata.entity.ListResult;
 import com.linkedin.metadata.entity.RollbackResult;
 import com.linkedin.metadata.entity.RollbackRunResult;
-import com.linkedin.metadata.entity.ebean.EbeanEntityService;
+import com.linkedin.metadata.entity.ValidationUtils;
 import com.linkedin.metadata.event.EntityEventProducer;
 import com.linkedin.metadata.models.AspectSpec;
 import com.linkedin.metadata.models.EntitySpec;
@@ -36,7 +37,13 @@ import com.linkedin.mxe.SystemMetadata;
 
 import java.net.URISyntaxException;
 import java.sql.Timestamp;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -47,8 +54,6 @@ import lombok.Value;
 import lombok.extern.slf4j.Slf4j;
 
 import static com.linkedin.metadata.Constants.*;
-
-import com.linkedin.metadata.entity.EntityUtils;
 
 
 @Slf4j
@@ -300,20 +305,21 @@ public class DatastaxEntityService extends EntityService {
 
   @Nonnull
   public RecordTemplate updateAspect(@Nonnull final Urn urn, @Nonnull final String entityName,
-      @Nonnull final String aspectName, @Nonnull final AspectSpec aspectSpec, @Nonnull final RecordTemplate newValue,
-      @Nonnull final AuditStamp auditStamp, final long version, final boolean emitMae) {
+     @Nonnull final String aspectName, @Nonnull final AspectSpec aspectSpec, @Nonnull final RecordTemplate newValue,
+     @Nonnull final AuditStamp auditStamp, @Nonnull final long version, @Nonnull final boolean emitMae) {
 
     log.debug(
         String.format("Invoked updateAspect with urn: %s, aspectName: %s, newValue: %s, version: %s, emitMae: %s", urn,
             aspectName, newValue, version, emitMae));
-    return updateAspect(urn, entityName, aspectName, newValue, auditStamp, version, emitMae,
-        DEFAULT_MAX_CONDITIONAL_RETRY);
+    return updateAspect(urn, entityName, aspectName, aspectSpec, newValue, auditStamp, version, emitMae,
+            DEFAULT_MAX_CONDITIONAL_RETRY);
   }
 
   @Nonnull
   private RecordTemplate updateAspect(@Nonnull final Urn urn, @Nonnull final String entityName,
-      @Nonnull final String aspectName, @Nonnull final RecordTemplate value, @Nonnull final AuditStamp auditStamp,
-      final long version, final boolean emitMae, final int maxConditionalUpdateRetry) {
+    @Nonnull final String aspectName, @Nonnull final AspectSpec aspectSpec, @Nonnull final RecordTemplate value,
+    @Nonnull final AuditStamp auditStamp, @Nonnull final long version, @Nonnull final boolean emitMae,
+    final int maxConditionalUpdateRetry) {
 
     final UpdateAspectResult result = entityDao.runInConditionalWithRetry(() -> {
 
@@ -350,9 +356,20 @@ public class DatastaxEntityService extends EntityService {
     final RecordTemplate newValue = result.getNewValue();
 
     if (emitMae) {
-      log.debug(String.format("Producing MetadataAuditEvent for updated aspect %s, urn %s", aspectName, urn));
-      produceMetadataAuditEvent(urn, oldValue, newValue, result.getOldSystemMetadata(), result.getNewSystemMetadata(),
-          MetadataAuditOperation.UPDATE);
+      final MetadataChangeLog metadataChangeLog = new MetadataChangeLog();
+      metadataChangeLog.setEntityType(entityName);
+      metadataChangeLog.setEntityUrn(urn);
+      metadataChangeLog.setChangeType(ChangeType.UPSERT);
+      metadataChangeLog.setAspectName(aspectName);
+      metadataChangeLog.setAspect(GenericAspectUtils.serializeAspect(newValue));
+      metadataChangeLog.setSystemMetadata(result.newSystemMetadata);
+      if (oldValue != null) {
+        metadataChangeLog.setPreviousAspectValue(GenericAspectUtils.serializeAspect(oldValue));
+      }
+      if (result.oldSystemMetadata != null) {
+        metadataChangeLog.setPreviousSystemMetadata(result.oldSystemMetadata);
+      }
+      produceMetadataChangeLog(urn, aspectSpec, metadataChangeLog);
     } else {
       log.debug(String.format("Skipped producing MetadataAuditEvent for updated aspect %s, urn %s. emitMAE is false.",
           aspectName, urn));
@@ -376,6 +393,7 @@ public class DatastaxEntityService extends EntityService {
   public Urn ingestProposal(@Nonnull MetadataChangeProposal metadataChangeProposal, AuditStamp auditStamp) {
     log.debug("entity type = {}", metadataChangeProposal.getEntityType());
     EntitySpec entitySpec = getEntityRegistry().getEntitySpec(metadataChangeProposal.getEntityType());
+    String entityName = entitySpec.getName();
     log.debug("entity spec = {}", entitySpec);
 
     Urn entityUrn = EntityKeyUtils.getUrnFromProposal(metadataChangeProposal, entitySpec.getKeyAspectSpec());
@@ -392,8 +410,8 @@ public class DatastaxEntityService extends EntityService {
 
     if (aspectSpec == null) {
       throw new RuntimeException(
-          String.format("Unknown aspect {} for entity {}", metadataChangeProposal.getAspectName(),
-              metadataChangeProposal.getEntityType()));
+              String.format("Unknown aspect %s for entity %s", metadataChangeProposal.getAspectName(),
+                      metadataChangeProposal.getEntityType()));
     }
 
     log.debug("aspect spec = {}", aspectSpec);
@@ -401,11 +419,12 @@ public class DatastaxEntityService extends EntityService {
     RecordTemplate aspect;
     try {
       aspect = GenericAspectUtils.deserializeAspect(metadataChangeProposal.getAspect().getValue(),
-          metadataChangeProposal.getAspect().getContentType(), aspectSpec);
+              metadataChangeProposal.getAspect().getContentType(), aspectSpec);
+      ValidationUtils.validateOrThrow(aspect);
     } catch (ModelConversionException e) {
       throw new RuntimeException(
-          String.format("Could not deserialize {} for aspect {}", metadataChangeProposal.getAspect().getValue(),
-              metadataChangeProposal.getAspectName()));
+              String.format("Could not deserialize {} for aspect {}", metadataChangeProposal.getAspect().getValue(),
+                      metadataChangeProposal.getAspectName()));
     }
     log.debug("aspect = {}", aspect);
 
@@ -423,8 +442,9 @@ public class DatastaxEntityService extends EntityService {
 
     if (!aspectSpec.isTimeseries()) {
       Timer.Context ingestToLocalDBTimer = MetricUtils.timer(this.getClass(), "ingestProposalToLocalDB").time();
-      UpdateAspectResult result = ingestAspectToLocalDB(entityUrn, metadataChangeProposal.getEntityType(),
-          metadataChangeProposal.getAspectName(), aspect, auditStamp, systemMetadata, DEFAULT_MAX_CONDITIONAL_RETRY);
+      DatastaxEntityService.UpdateAspectResult result =
+              ingestAspectToLocalDB(entityUrn, entityName, metadataChangeProposal.getAspectName(), newAspect, auditStamp,
+                      systemMetadata, DEFAULT_MAX_CONDITIONAL_RETRY);
       ingestToLocalDBTimer.stop();
       oldAspect = result.oldValue;
       oldSystemMetadata = result.oldSystemMetadata;
@@ -434,7 +454,7 @@ public class DatastaxEntityService extends EntityService {
 
     if (oldAspect != newAspect || alwaysEmitAuditEvent) {
       log.debug(String.format("Producing MetadataChangeLog for ingested aspect %s, urn %s",
-          metadataChangeProposal.getAspectName(), entityUrn));
+              metadataChangeProposal.getAspectName(), entityUrn));
 
       final MetadataChangeLog metadataChangeLog = new MetadataChangeLog(metadataChangeProposal.data());
       if (oldAspect != null) {
@@ -455,9 +475,10 @@ public class DatastaxEntityService extends EntityService {
       produceMetadataChangeLog(entityUrn, aspectSpec, metadataChangeLog);
     } else {
       log.debug(
-          String.format("Skipped producing MetadataAuditEvent for ingested aspect %s, urn %s. Aspect has not changed.",
-              metadataChangeProposal.getAspectName(), entityUrn));
+              String.format("Skipped producing MetadataAuditEvent for ingested aspect %s, urn %s. Aspect has not changed.",
+                      metadataChangeProposal.getAspectName(), entityUrn));
     }
+
     return entityUrn;
   }
 

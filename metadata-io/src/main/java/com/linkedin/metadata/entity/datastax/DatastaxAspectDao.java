@@ -1,12 +1,15 @@
 package com.linkedin.metadata.entity.datastax;
 
-import static com.datastax.oss.driver.api.querybuilder.QueryBuilder.*;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.CqlSessionBuilder;
-import com.datastax.oss.driver.api.core.cql.*;
+import com.datastax.oss.driver.api.core.cql.BatchStatement;
+import com.datastax.oss.driver.api.core.cql.BatchStatementBuilder;
+import com.datastax.oss.driver.api.core.cql.BatchType;
+import com.datastax.oss.driver.api.core.cql.ResultSet;
+import com.datastax.oss.driver.api.core.cql.Row;
+import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 import com.datastax.oss.driver.api.core.paging.OffsetPager;
 import com.datastax.oss.driver.api.core.paging.OffsetPager.Page;
-import com.datastax.oss.driver.api.querybuilder.condition.Condition;
 import com.datastax.oss.driver.api.querybuilder.insert.Insert;
 import com.datastax.oss.driver.api.querybuilder.update.Update;
 import com.datastax.oss.driver.api.querybuilder.update.UpdateWithAssignments;
@@ -18,12 +21,19 @@ import com.linkedin.metadata.dao.retention.IndefiniteRetention;
 import com.linkedin.metadata.dao.retention.Retention;
 import com.linkedin.metadata.dao.retention.TimeBasedRetention;
 import com.linkedin.metadata.dao.retention.VersionBasedRetention;
+import com.linkedin.metadata.entity.AspectDao;
 import com.linkedin.metadata.entity.ListResult;
 import com.linkedin.metadata.query.ExtraInfo;
 import com.linkedin.metadata.query.ExtraInfoArray;
 import com.linkedin.metadata.query.ListResultMetadata;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.net.InetSocketAddress;
@@ -37,10 +47,15 @@ import javax.net.ssl.SSLContext;
 
 import lombok.extern.slf4j.Slf4j;
 
+import static com.datastax.oss.driver.api.querybuilder.QueryBuilder.deleteFrom;
+import static com.datastax.oss.driver.api.querybuilder.QueryBuilder.insertInto;
+import static com.datastax.oss.driver.api.querybuilder.QueryBuilder.literal;
+import static com.datastax.oss.driver.api.querybuilder.QueryBuilder.selectFrom;
+import static com.datastax.oss.driver.api.querybuilder.QueryBuilder.update;
 import static com.linkedin.metadata.Constants.*;
 
 @Slf4j
-public class DatastaxAspectDao {
+public class DatastaxAspectDao implements AspectDao {
   protected final CqlSession _cqlSession;
   private static final IndefiniteRetention INDEFINITE_RETENTION = new IndefiniteRetention();
   private final Map<String, Retention> _aspectRetentionMap = new HashMap<>();
@@ -126,7 +141,8 @@ public class DatastaxAspectDao {
             .value(DatastaxAspect.CREATED_BY_COLUMN, literal(datastaxAspect.getCreatedBy()))
             .ifNotExists();
   }
-  private Update createCondUpdateStatement(DatastaxAspect newDatastaxAspect, DatastaxAspect oldDatastaxAspect) {
+
+  private Update createUpdateStatement(DatastaxAspect newDatastaxAspect, DatastaxAspect oldDatastaxAspect) {
     return update(DatastaxAspect.TABLE_NAME)
             .setColumn(DatastaxAspect.METADATA_COLUMN, literal(newDatastaxAspect.getMetadata()))
             .setColumn(DatastaxAspect.SYSTEM_METADATA_COLUMN, literal(newDatastaxAspect.getSystemMetadata()))
@@ -135,12 +151,7 @@ public class DatastaxAspectDao {
             .setColumn(DatastaxAspect.CREATED_FOR_COLUMN, literal(newDatastaxAspect.getCreatedFor()))
             .whereColumn(DatastaxAspect.URN_COLUMN).isEqualTo(literal(newDatastaxAspect.getUrn()))
             .whereColumn(DatastaxAspect.ASPECT_COLUMN).isEqualTo(literal(newDatastaxAspect.getAspect()))
-            .whereColumn(DatastaxAspect.VERSION_COLUMN).isEqualTo(literal(newDatastaxAspect.getVersion()))
-            .if_(
-                    Condition.column(DatastaxAspect.METADATA_COLUMN).isEqualTo(literal(oldDatastaxAspect.getMetadata())),
-                    Condition.column(DatastaxAspect.SYSTEM_METADATA_COLUMN).isEqualTo(literal(oldDatastaxAspect.getSystemMetadata())),
-                    Condition.column(DatastaxAspect.CREATED_ON_COLUMN).isEqualTo(literal(oldDatastaxAspect.getCreatedOn() == null ? null : oldDatastaxAspect.getCreatedOn().toInstant())),
-                    Condition.column(DatastaxAspect.CREATED_BY_COLUMN).isEqualTo(literal(oldDatastaxAspect.getCreatedBy())));
+            .whereColumn(DatastaxAspect.VERSION_COLUMN).isEqualTo(literal(newDatastaxAspect.getVersion()));
   }
 
   public long batchSaveLatestAspect(
@@ -159,7 +170,8 @@ public class DatastaxAspectDao {
           final int nextVersion
   ) {
     BatchStatementBuilder batch = BatchStatement.builder(BatchType.LOGGED);
-    DatastaxAspect oldDatastaxAspect = new DatastaxAspect(urn, aspectName, nextVersion, oldAspectMetadata, oldSystemMetadata, oldTime, oldActor, oldImpersonator);
+    DatastaxAspect oldDatastaxAspect = new DatastaxAspect(
+            urn, aspectName, nextVersion, oldAspectMetadata, oldSystemMetadata, oldTime, oldActor, oldImpersonator);
 
     if (oldAspectMetadata != null && oldTime != null) {
       // Save oldValue as nextVersion
@@ -172,7 +184,9 @@ public class DatastaxAspectDao {
     if (nextVersion == 0)  {
       batch = batch.addStatement(createCondInsertStatement(newDatastaxAspect).build());
     } else {
-      batch = batch.addStatement(createCondUpdateStatement(newDatastaxAspect, oldDatastaxAspect).build());
+      // We don't need to add a condition here as the conditional insert will fail if another thread has updated the
+      // aspect in the meantime
+      batch = batch.addStatement(createUpdateStatement(newDatastaxAspect, oldDatastaxAspect).build());
     }
 
     ResultSet rs = _cqlSession.execute(batch.build());
@@ -264,6 +278,17 @@ public class DatastaxAspectDao {
     return result;
   }
 
+  public ResultSet updateSystemMetadata(@Nonnull DatastaxAspect datastaxAspect) {
+
+      Update u = update(DatastaxAspect.TABLE_NAME)
+              .setColumn(DatastaxAspect.SYSTEM_METADATA_COLUMN, literal(datastaxAspect.getSystemMetadata()))
+              .whereColumn(DatastaxAspect.URN_COLUMN).isEqualTo(literal(datastaxAspect.getUrn()))
+              .whereColumn(DatastaxAspect.ASPECT_COLUMN).isEqualTo(literal(datastaxAspect.getAspect()))
+              .whereColumn(DatastaxAspect.VERSION_COLUMN).isEqualTo(literal(datastaxAspect.getVersion()));
+
+      return _cqlSession.execute(u.build());
+    }
+
   public ResultSet condUpsertAspect(DatastaxAspect datastaxAspect, DatastaxAspect oldDatastaxAspect) {
 
     String entity;
@@ -286,14 +311,8 @@ public class DatastaxAspectDao {
               .setColumn(DatastaxAspect.CREATED_FOR_COLUMN, literal(datastaxAspect.getCreatedFor()))
               .whereColumn(DatastaxAspect.URN_COLUMN).isEqualTo(literal(datastaxAspect.getUrn()))
               .whereColumn(DatastaxAspect.ASPECT_COLUMN).isEqualTo(literal(datastaxAspect.getAspect()))
-              .whereColumn(DatastaxAspect.VERSION_COLUMN).isEqualTo(literal(datastaxAspect.getVersion()))
-              .if_(
-                      Condition.column(DatastaxAspect.METADATA_COLUMN).isEqualTo(literal(oldDatastaxAspect.getMetadata())),
-                      Condition.column(DatastaxAspect.SYSTEM_METADATA_COLUMN).isEqualTo(literal(oldDatastaxAspect.getSystemMetadata())),
-                      Condition.column(DatastaxAspect.CREATED_ON_COLUMN).isEqualTo(literal(oldDatastaxAspect.getCreatedOn() == null ? null : oldDatastaxAspect.getCreatedOn().toInstant())),
-                      Condition.column(DatastaxAspect.CREATED_BY_COLUMN).isEqualTo(literal(oldDatastaxAspect.getCreatedBy())));
+              .whereColumn(DatastaxAspect.VERSION_COLUMN).isEqualTo(literal(datastaxAspect.getVersion()));
 
-      // TODO: check for wasApplied
       return _cqlSession.execute(u.build());
     }
   }

@@ -13,8 +13,8 @@ import com.linkedin.datahub.upgrade.restorebackup.backupreader.EbeanAspectBackup
 import com.linkedin.datahub.upgrade.restorebackup.backupreader.LocalParquetReader;
 import com.linkedin.metadata.entity.EntityService;
 import com.linkedin.metadata.entity.ebean.EbeanAspectV2;
-import com.linkedin.metadata.models.AspectSpec;
 import com.linkedin.metadata.entity.EntityUtils;
+import com.linkedin.metadata.models.AspectSpec;
 import com.linkedin.metadata.models.EntitySpec;
 import com.linkedin.metadata.models.registry.EntityRegistry;
 import java.net.URISyntaxException;

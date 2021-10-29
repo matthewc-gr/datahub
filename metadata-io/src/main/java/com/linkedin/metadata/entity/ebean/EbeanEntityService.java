@@ -301,13 +301,13 @@ public class EbeanEntityService extends EntityService {
     log.debug(
         String.format("Invoked updateAspect with urn: %s, aspectName: %s, newValue: %s, version: %s, emitMae: %s", urn,
             aspectName, newValue, version, emitMae));
-    return updateAspect(urn, entityName, aspectName, newValue, auditStamp, version, emitMae,
+    return updateAspect(urn, entityName, aspectName, aspectSpec, newValue, auditStamp, version, emitMae,
         DEFAULT_MAX_TRANSACTION_RETRY);
   }
 
   @Nonnull
   private RecordTemplate updateAspect(@Nonnull final Urn urn, @Nonnull final String entityName,
-      @Nonnull final String aspectName, @Nonnull final RecordTemplate value, @Nonnull final AuditStamp auditStamp,
+      @Nonnull final String aspectName, @Nonnull final AspectSpec aspectSpec, @Nonnull final RecordTemplate value, @Nonnull final AuditStamp auditStamp,
       @Nonnull final long version, @Nonnull final boolean emitMae, final int maxTransactionRetry) {
 
     final UpdateAspectResult result = _entityDao.runInTransactionWithRetry(() -> {
@@ -337,13 +337,24 @@ public class EbeanEntityService extends EntityService {
 
     if (emitMae) {
       log.debug(String.format("Producing MetadataAuditEvent for updated aspect %s, urn %s", aspectName, urn));
-      produceMetadataAuditEvent(urn, oldValue, newValue, result.getOldSystemMetadata(), result.getNewSystemMetadata(),
-          MetadataAuditOperation.UPDATE);
+      final MetadataChangeLog metadataChangeLog = new MetadataChangeLog();
+      metadataChangeLog.setEntityType(entityName);
+      metadataChangeLog.setEntityUrn(urn);
+      metadataChangeLog.setChangeType(ChangeType.UPSERT);
+      metadataChangeLog.setAspectName(aspectName);
+      metadataChangeLog.setAspect(GenericAspectUtils.serializeAspect(newValue));
+      metadataChangeLog.setSystemMetadata(result.newSystemMetadata);
+      if (oldValue != null) {
+        metadataChangeLog.setPreviousAspectValue(GenericAspectUtils.serializeAspect(oldValue));
+      }
+      if (result.oldSystemMetadata != null) {
+        metadataChangeLog.setPreviousSystemMetadata(result.oldSystemMetadata);
+      }
+      produceMetadataChangeLog(urn, aspectSpec, metadataChangeLog);
     } else {
       log.debug(String.format("Skipped producing MetadataAuditEvent for updated aspect %s, urn %s. emitMAE is false.",
           aspectName, urn));
     }
-
     return newValue;
   }
 

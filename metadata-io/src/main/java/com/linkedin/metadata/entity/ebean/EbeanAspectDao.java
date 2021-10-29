@@ -2,6 +2,7 @@ package com.linkedin.metadata.entity.ebean;
 
 import com.linkedin.common.AuditStamp;
 import com.linkedin.common.urn.Urn;
+import com.linkedin.metadata.entity.AspectDao;
 import com.linkedin.metadata.dao.exception.ModelConversionException;
 import com.linkedin.metadata.dao.exception.RetryLimitReached;
 import com.linkedin.metadata.dao.retention.IndefiniteRetention;
@@ -43,7 +44,7 @@ import lombok.extern.slf4j.Slf4j;
 import static com.linkedin.metadata.Constants.ASPECT_LATEST_VERSION;
 
 @Slf4j
-public class EbeanAspectDao {
+public class EbeanAspectDao implements AspectDao {
 
   private static final IndefiniteRetention INDEFINITE_RETENTION = new IndefiniteRetention();
 

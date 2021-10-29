@@ -27,15 +27,14 @@ public class EntityServiceFactory {
   ApplicationContext applicationContext;
 
   @Bean(name = "entityService")
-  @DependsOn({"datastaxAspectDao", "kafkaEventProducer", TopicConventionFactory.TOPIC_CONVENTION_BEAN,
-      "entityRegistry"})
-  @ConditionalOnProperty(name = "DAO_SERVICE_LAYER", havingValue = "datastax")
+  @DependsOn({"datastaxAspectDao", "kafkaEventProducer", TopicConventionFactory.TOPIC_CONVENTION_BEAN, "entityRegistry"})
+  @ConditionalOnProperty(name = "ENTITY_SERVICE_IMPL", havingValue = "datastax")
   @Nonnull
   protected EntityService createDatastaxInstance() {
 
     final EntityKafkaMetadataEventProducer producer =
-        new EntityKafkaMetadataEventProducer(applicationContext.getBean(Producer.class),
-            applicationContext.getBean(TopicConvention.class));
+            new EntityKafkaMetadataEventProducer(applicationContext.getBean(Producer.class),
+                    applicationContext.getBean(TopicConvention.class));
 
     return new DatastaxEntityService(applicationContext.getBean(DatastaxAspectDao.class), producer,
         applicationContext.getBean(EntityRegistry.class), changeProcessorFactory.createInstance());
@@ -46,7 +45,7 @@ public class EntityServiceFactory {
 
   @Bean(name = "entityService")
   @DependsOn({"ebeanAspectDao", "kafkaEventProducer", TopicConventionFactory.TOPIC_CONVENTION_BEAN, "entityRegistry"})
-  @ConditionalOnProperty(name = "DAO_SERVICE_LAYER", havingValue = "ebean", matchIfMissing = true)
+  @ConditionalOnProperty(name = "ENTITY_SERVICE_IMPL", havingValue = "ebean", matchIfMissing = true)
   @Nonnull
   protected EntityService createEbeanInstance() {
 

@@ -1,6 +1,7 @@
 package com.linkedin.gms.factory.entity;
 
 import com.linkedin.gms.factory.common.TopicConventionFactory;
+import com.linkedin.gms.factory.custom.ChangeProcessorFactory;
 import com.linkedin.metadata.dao.producer.EntityKafkaMetadataEventProducer;
 import com.linkedin.metadata.entity.EntityService;
 import com.linkedin.metadata.entity.ebean.EbeanAspectDao;
@@ -15,11 +16,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
 
-
 @Configuration
 public class EntityServiceFactory {
   @Autowired
   ApplicationContext applicationContext;
+
+  @Autowired
+  ChangeProcessorFactory changeProcessorFactory;
 
   @Bean(name = "entityService")
   @DependsOn({"ebeanAspectDao", "kafkaEventProducer", TopicConventionFactory.TOPIC_CONVENTION_BEAN, "entityRegistry"})
@@ -31,6 +34,6 @@ public class EntityServiceFactory {
             applicationContext.getBean(TopicConvention.class));
 
     return new EbeanEntityService(applicationContext.getBean(EbeanAspectDao.class), producer,
-        applicationContext.getBean(EntityRegistry.class));
+        applicationContext.getBean(EntityRegistry.class), changeProcessorFactory.createInstance());
   }
 }

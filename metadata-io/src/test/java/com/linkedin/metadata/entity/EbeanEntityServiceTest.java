@@ -16,6 +16,9 @@ import com.linkedin.metadata.aspect.Aspect;
 import com.linkedin.metadata.aspect.CorpUserAspect;
 import com.linkedin.metadata.aspect.CorpUserAspectArray;
 import com.linkedin.metadata.aspect.VersionedAspect;
+import com.linkedin.metadata.changeprocessor.ChangeProcessor;
+import com.linkedin.metadata.changeprocessor.ChangeStreamProcessor;
+import com.linkedin.metadata.changeprocessor.ChangeResult;
 import com.linkedin.metadata.entity.ebean.EbeanAspectDao;
 import com.linkedin.metadata.entity.ebean.EbeanAspectV2;
 import com.linkedin.metadata.entity.ebean.EbeanEntityService;
@@ -56,6 +59,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
+import static org.testng.AssertJUnit.*;
 
 
 public class EbeanEntityServiceTest {
@@ -70,6 +74,7 @@ public class EbeanEntityServiceTest {
   private EbeanAspectDao _aspectDao;
   private EbeanServer _server;
   private EntityEventProducer _mockProducer;
+  private ChangeStreamProcessor _changeStreamProcessor;
 
   @Nonnull
   private static ServerConfig createTestingH2ServerConfig() {
@@ -101,8 +106,9 @@ public class EbeanEntityServiceTest {
     _server = EbeanServerFactory.create(createTestingH2ServerConfig());
     _mockProducer = mock(EntityEventProducer.class);
     _aspectDao = new EbeanAspectDao(_server);
+    _changeStreamProcessor = new ChangeStreamProcessor();
     _aspectDao.setConnectionValidated(true);
-    _entityService = new EbeanEntityService(_aspectDao, _mockProducer, _testEntityRegistry);
+    _entityService = new EbeanEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
   }
 
   @Test
@@ -228,6 +234,7 @@ public class EbeanEntityServiceTest {
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
     String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
+    String entityName = "corpUser";
 
     SystemMetadata metadata1 = new SystemMetadata();
     metadata1.setLastObserved(1625792689);
@@ -238,7 +245,7 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
     RecordTemplate readAspect1 = _entityService.getLatestAspect(entityUrn, aspectName);
     assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspect1));
 
@@ -246,7 +253,7 @@ public class EbeanEntityServiceTest {
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
 
     // Validate retrieval of CorpUserInfo Aspect #2
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
     RecordTemplate readAspect2 = _entityService.getLatestAspect(entityUrn, aspectName);
     EbeanAspectV2 readEbean1 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 1);
     EbeanAspectV2 readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
@@ -271,6 +278,7 @@ public class EbeanEntityServiceTest {
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
     String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
+    String entityName = "corpUser";
 
     SystemMetadata metadata1 = new SystemMetadata();
     metadata1.setLastObserved(1625792689);
@@ -281,7 +289,7 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     // Validate retrieval of CorpUserInfo Aspect #1
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
     RecordTemplate readAspect1 = _entityService.getLatestAspect(entityUrn, aspectName);
     assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspect1));
 
@@ -289,7 +297,7 @@ public class EbeanEntityServiceTest {
     CorpUserInfo writeAspect2 = createCorpUserInfo("email@test.com");
 
     // Validate retrieval of CorpUserInfo Aspect #2
-    _entityService.ingestAspect(entityUrn, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
     RecordTemplate readAspect2 = _entityService.getLatestAspect(entityUrn, aspectName);
     EbeanAspectV2 readEbean2 = _aspectDao.getAspect(entityUrn.toString(), aspectName, 0);
 
@@ -323,18 +331,19 @@ public class EbeanEntityServiceTest {
     metadata1.setRunId("run-123");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
+    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // List aspects
     ListResult<RecordTemplate> batch1 = _entityService.listLatestAspects(entityUrn1.getEntityType(), aspectName, 0, 2);
@@ -451,22 +460,23 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
+    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since this run has been overwritten
     AspectRowSummary rollbackOverwrittenAspect = new AspectRowSummary();
@@ -510,17 +520,18 @@ public class EbeanEntityServiceTest {
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
     String keyAspectName = _entityService.getKeyAspectName(entityUrn1);
+    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     RecordTemplate writeKey1 = _entityService.buildKeyAspect(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since the key should have been written in the furst run
     AspectRowSummary rollbackKeyWithWrongRunId = new AspectRowSummary();
@@ -565,26 +576,27 @@ public class EbeanEntityServiceTest {
     metadata2.setRunId("run-456");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserInfo().schema());
+    String entityName = "corpUser";
     String keyAspectName = _entityService.getKeyAspectName(entityUrn1);
 
     // Ingest CorpUserInfo Aspect #1
     CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     RecordTemplate writeKey1 = _entityService.buildKeyAspect(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, keyAspectName, writeKey1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     CorpUserInfo writeAspect2 = createCorpUserInfo("email2@test.com");
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     CorpUserInfo writeAspect3 = createCorpUserInfo("email3@test.com");
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #1 Overwrite
     CorpUserInfo writeAspect1Overwrite = createCorpUserInfo("email1.overwrite@test.com");
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1Overwrite, TEST_AUDIT_STAMP, metadata2);
 
     // this should no-op since the key should have been written in the furst run
     AspectRowSummary rollbackKeyWithWrongRunId = new AspectRowSummary();
@@ -614,18 +626,19 @@ public class EbeanEntityServiceTest {
     metadata1.setRunId("run-123");
 
     String aspectName = PegasusUtils.getAspectNameFromSchema(new CorpUserKey().schema());
+    String entityName = "corpUser";
 
     // Ingest CorpUserInfo Aspect #1
     RecordTemplate writeAspect1 = createCorpUserKey(entityUrn1);
-    _entityService.ingestAspect(entityUrn1, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn1, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #2
     RecordTemplate writeAspect2 = createCorpUserKey(entityUrn2);
-    _entityService.ingestAspect(entityUrn2, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn2, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata1);
 
     // Ingest CorpUserInfo Aspect #3
     RecordTemplate writeAspect3 = createCorpUserKey(entityUrn3);
-    _entityService.ingestAspect(entityUrn3, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
+    _entityService.ingestAspect(entityUrn3, entityName, aspectName, writeAspect3, TEST_AUDIT_STAMP, metadata1);
 
     // List aspects urns
     ListUrnsResult batch1 = _entityService.listUrns(entityUrn1.getEntityType(), 0, 2);
@@ -661,13 +674,76 @@ public class EbeanEntityServiceTest {
     return entity;
   }
 
+  @Test
+  public void testInjestAspectWithChangeProcessorShouldIgnoreUpdate() throws Exception {
+    ChangeProcessor changeProcessor = mock(ChangeProcessor.class);
+
+    Mockito.when(changeProcessor.process(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(ChangeResult.failure("Fail"));
+    String entityName = "corpUser";
+
+    _changeStreamProcessor.registerPreProcessor(entityName, "corpUserInfo", changeProcessor);
+
+    _entityService = new EbeanEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
+
+    Urn entityUrn = Urn.createFromString("urn:li:corpuser:test");
+
+    // Ingest CorpUserInfo Aspect with bad email address
+    CorpUserInfo writeAspect1 = createCorpUserInfo("email@test.com");
+    String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
+    SystemMetadata metadata1 = new SystemMetadata();
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    RecordTemplate readAspectOriginal = _entityService.getAspect(entityUrn, aspectName, 0);
+
+    // Should ignore updated aspect with disallowed email address
+    assertNull(readAspectOriginal);
+  }
+
+  @Test
+  public void testInjestAspectWithCustomLogicShouldIgnoreUpdates() throws Exception {
+    Urn entityUrn = Urn.createFromString("urn:li:corpuser:test");
+
+    CorpUserInfo writeAspect1 = createCorpUserInfo("email@properemail.com");
+    String aspectName = PegasusUtils.getAspectNameFromSchema(writeAspect1.schema());
+    String entityName = "corpUser";
+    SystemMetadata metadata1 = new SystemMetadata();
+
+    CorpUserInfo writeAspect2 = createCorpUserInfo("disallowedEmail@test.com");
+    SystemMetadata metadata2 = new SystemMetadata();
+
+    // Setup a change processor to allow the initial change
+    ChangeProcessor changeProcessor = mock(ChangeProcessor.class);
+    Mockito.when(changeProcessor.process(entityName, aspectName, null, writeAspect1)).thenReturn(
+        ChangeResult.success(writeAspect1));
+
+    Mockito.when(changeProcessor.process(entityName, aspectName, writeAspect1, writeAspect2)).thenReturn(
+        ChangeResult.failure("Fail"));
+
+    _changeStreamProcessor.registerPreProcessor(entityName, "corpUserInfo", changeProcessor);
+
+    _entityService = new EbeanEntityService(_aspectDao, _mockProducer, _testEntityRegistry, _changeStreamProcessor);
+
+    // Ingest CorpUserInfo Aspect #1 with correct email address
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect1, TEST_AUDIT_STAMP, metadata1);
+    RecordTemplate readAspectOriginal = _entityService.getAspect(entityUrn, aspectName, 0);
+
+    // Shouldn't ignore correct email address
+    assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspectOriginal));
+
+    // Ingest CorpUserInfo Aspect #2 with bad email address
+    _entityService.ingestAspect(entityUrn, entityName, aspectName, writeAspect2, TEST_AUDIT_STAMP, metadata2);
+    RecordTemplate readAspectOriginalUnchanged = _entityService.getAspect(entityUrn, aspectName, 0);
+
+    // Should ignore updated aspect with disallowed email address
+    assertTrue(DataTemplateUtil.areEqual(writeAspect1, readAspectOriginalUnchanged));
+  }
+
   @Nonnull
-  private RecordTemplate createCorpUserKey(Urn urn) throws Exception {
+  private RecordTemplate createCorpUserKey(Urn urn) {
     return EntityKeyUtils.convertUrnToEntityKey(urn, new CorpUserKey().schema());
   }
 
   @Nonnull
-  private CorpUserInfo createCorpUserInfo(String email) throws Exception {
+  private CorpUserInfo createCorpUserInfo(String email) {
     CorpUserInfo corpUserInfo = new CorpUserInfo();
     corpUserInfo.setEmail(email);
     corpUserInfo.setActive(true);

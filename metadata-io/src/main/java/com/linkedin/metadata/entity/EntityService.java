@@ -17,6 +17,7 @@ import com.linkedin.metadata.event.EntityEventProducer;
 import com.linkedin.metadata.models.AspectSpec;
 import com.linkedin.metadata.models.EntitySpec;
 import com.linkedin.metadata.models.registry.EntityRegistry;
+import com.linkedin.metadata.changeprocessor.ChangeStreamProcessor;
 import com.linkedin.metadata.query.ListUrnsResult;
 import com.linkedin.metadata.run.AspectRowSummary;
 import com.linkedin.metadata.search.utils.BrowsePathUtils;
@@ -85,15 +86,18 @@ public abstract class EntityService {
   private final EntityEventProducer _producer;
   private final EntityRegistry _entityRegistry;
   private final Map<String, Set<String>> _entityToValidAspects;
+  private final ChangeStreamProcessor _changeStreamProcessor;
   private Boolean _emitAspectSpecificAuditEvent = false;
   public static final String DEFAULT_RUN_ID = "no-run-id-provided";
   public static final String BROWSE_PATHS = "browsePaths";
   public static final String DATA_PLATFORM_INSTANCE = "dataPlatformInstance";
 
-  protected EntityService(@Nonnull final EntityEventProducer producer, @Nonnull final EntityRegistry entityRegistry) {
+  protected EntityService(@Nonnull final EntityEventProducer producer, @Nonnull final EntityRegistry entityRegistry,
+      @Nonnull final ChangeStreamProcessor changeStreamProcessor) {
     _producer = producer;
     _entityRegistry = entityRegistry;
     _entityToValidAspects = buildEntityToValidAspects(entityRegistry);
+    _changeStreamProcessor = changeStreamProcessor;
   }
 
   /**
@@ -151,16 +155,16 @@ public abstract class EntityService {
    * @param systemMetadata
    * @return the {@link RecordTemplate} representation of the written aspect object
    */
-  public abstract RecordTemplate ingestAspect(@Nonnull final Urn urn, @Nonnull final String aspectName,
+  public abstract RecordTemplate ingestAspect(@Nonnull final Urn urn, @Nonnull final String entityName, @Nonnull final String aspectName,
       @Nonnull final RecordTemplate newValue, @Nonnull final AuditStamp auditStamp, SystemMetadata systemMetadata);
 
-  public RecordTemplate ingestAspect(@Nonnull final Urn urn, @Nonnull final String aspectName,
+  public RecordTemplate ingestAspect(@Nonnull final Urn urn, @Nonnull final String entityName, @Nonnull final String aspectName,
       @Nonnull final RecordTemplate newValue, @Nonnull final AuditStamp auditStamp) {
 
     SystemMetadata generatedSystemMetadata = new SystemMetadata();
     generatedSystemMetadata.setLastObserved(System.currentTimeMillis());
 
-    return ingestAspect(urn, aspectName, newValue, auditStamp, generatedSystemMetadata);
+    return ingestAspect(urn, entityName, aspectName, newValue, auditStamp, generatedSystemMetadata);
   }
 
   /**
@@ -358,8 +362,10 @@ public abstract class EntityService {
         aspectRecordsToIngest.stream().map(pair -> pair.getFirst()).collect(Collectors.toSet())
     ));
 
+    String entityName = PegasusUtils.getEntityNameFromSchema(snapshotRecord.schema());
+
     aspectRecordsToIngest.forEach(aspectNamePair -> {
-      ingestAspect(urn, aspectNamePair.getFirst(), aspectNamePair.getSecond(), auditStamp, systemMetadata);
+      ingestAspect(urn, entityName, aspectNamePair.getFirst(), aspectNamePair.getSecond(), auditStamp, systemMetadata);
     });
   }
 
